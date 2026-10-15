@@ -18,18 +18,24 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Clock")]
 [assembly: AssemblyProduct("Kinetik Clock")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.0.2.0")]
 
 static class Program
 {
-    public const string Version = "1.0.1";
+    public const string Version = "1.0.2";
+    // --demo: made-up places, nothing read from or saved to this PC. "--theme Name" picks its theme (for screenshots).
+    public static bool Demo;
+    public static string DemoTheme;
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        Demo = args.Contains("--demo");
+        int ti = Array.IndexOf(args, "--theme");
+        if (ti >= 0 && ti + 1 < args.Length) DemoTheme = args[ti + 1];
         bool created;
-        using (new Mutex(true, @"Local\KinetikClock", out created))
+        using (new Mutex(true, Demo ? @"Local\KinetikClockDemo" : @"Local\KinetikClock", out created))
         {
             if (!created) return; // already running
             SetProcessDPIAware();
@@ -37,10 +43,10 @@ static class Program
             Application.SetCompatibleTextRenderingDefault(false);
             ToolStripManager.Renderer = new DarkMenu();
             Backup.KeyName = "KinetikClock"; Backup.AppTitle = "Kinetik Clock";
-            Backup.OfferRestore();
+            if (!Demo) Backup.OfferRestore();
             Application.Run(new ClockForm());
         }
-        Backup.AfterExit();
+        if (!Demo) Backup.AfterExit();
     }
 }
 
@@ -97,6 +103,12 @@ class Settings
     // restored into it or another program has it busy.
     public static Settings Load()
     {
+        if (Program.Demo)
+            return new Settings
+            {
+                Layer = 2, ThemeName = Program.DemoTheme ?? "Midnight", X = 240, Y = 160, ShowOffset = false,
+                Places = "London=GMT Standard Time\nNew York=Eastern Standard Time\nTokyo=Tokyo Standard Time\nSydney=AUS Eastern Standard Time\nSan Francisco=Pacific Standard Time"
+            };
         Settings s = null;
         for (int attempt = 0; attempt < 4; attempt++)
         {
@@ -141,7 +153,7 @@ class Settings
 
     public void Save()
     {
-        if (Unreadable) return; // never save defaults over settings that couldn't be read
+        if (Program.Demo || Unreadable) return; // never save defaults over settings that couldn't be read
         try
         {
             using (var k = Registry.CurrentUser.CreateSubKey(KeyPath))
@@ -417,7 +429,7 @@ class ClockForm : Form
         Text = "Kinetik Clock";
         menu.Opening += (s, e) => BuildMenu();
         try { tray.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { tray.Icon = SystemIcons.Application; }
-        tray.Text = "Kinetik Clock";
+        tray.Text = Program.Demo ? "Kinetik Clock (demo)" : "Kinetik Clock";
         Backup.BeforeExit = () => tray.Visible = false;
         tray.ContextMenuStrip = menu;
         tray.Visible = true;
@@ -474,7 +486,10 @@ class ClockForm : Form
     protected override void SetVisibleCore(bool value)
     {
         if (!IsHandleCreated) CreateHandle();
-        base.SetVisibleCore(false); // shown by Frame() with SW_SHOWNA, so it never steals focus
+        base.SetVisibleCore(false); // shown by Render() with SW_SHOWNA, so it never steals focus
+        // the first Render ran while the handle was created, and the line above hid it again: show it now,
+        // not when the next minute turns over
+        if (value) BeginInvoke((Action)(() => Render(true)));
     }
 
     protected override void Dispose(bool disposing)

@@ -8,6 +8,11 @@
 
 It's a small portable app with no installer and no account. It's a companion to [Kinetik](https://github.com/WastedDesigner/Kinetik), the taskbar system monitor, and [Kinetik Calendar](https://github.com/WastedDesigner/KinetikCalendar), and shares their look.
 
+<p>
+  <img src="screenshots/widget.png" alt="Kinetik Clock in the Midnight theme, showing London, New York, Tokyo, Sydney and San Francisco" width="380">
+  <img src="screenshots/widget-light.png" alt="Kinetik Clock in the Light theme" width="380">
+</p>
+
 > **About this project:** I made this for my own desktop and decided to share it in case anyone else finds it useful. If you run into a bug or have an idea for a feature, please [open an issue](../../issues).
 
 ## Features
@@ -32,6 +37,8 @@ Windows 10 or 11 (64-bit) with .NET Framework 4.8, which ships with both.
 ## Building from source
 
 No SDK needed: `build.bat` compiles `KinetikClock.cs` with the .NET Framework compiler that ships with Windows. `build.bat package` also makes `KinetikClock.zip` for a release.
+
+`KinetikClock.exe --demo` runs a separate copy with made-up places that reads and saves no settings, which is how the screenshots were made. Add `--theme Light` (or any theme name) to pick its theme.
 
 ## License
 
