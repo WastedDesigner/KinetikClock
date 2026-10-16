@@ -18,11 +18,11 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Clock")]
 [assembly: AssemblyProduct("Kinetik Clock")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.0.4.0")]
+[assembly: AssemblyVersion("1.0.5.0")]
 
 static class Program
 {
-    public const string Version = "1.0.4";
+    public const string Version = "1.0.5";
     // --demo: made-up places, nothing read from or saved to this PC. "--theme Name" picks its theme (for screenshots).
     public static bool Demo;
     public static string DemoTheme;
@@ -442,7 +442,7 @@ class ClockForm : Form
         SystemEvents.SessionSwitch += OnSession;
     }
 
-    void OnTimeChanged(object sender, EventArgs e) { try { BeginInvoke((Action)(() => { TimeZoneInfo.ClearCachedData(); Tick(); Render(true); })); } catch (InvalidOperationException) { } }
+    void OnTimeChanged(object sender, EventArgs e) { KinetikSuite.Ui.Post(this, () => { TimeZoneInfo.ClearCachedData(); Tick(); Render(true); }); }
 
     // Nothing redraws while the PC is locked (with seconds on, that's once a second); it catches up on unlock.
     void OnSession(object s, SessionSwitchEventArgs e)
