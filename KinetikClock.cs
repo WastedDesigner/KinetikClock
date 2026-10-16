@@ -18,11 +18,11 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Clock")]
 [assembly: AssemblyProduct("Kinetik Clock")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.0.3.0")]
+[assembly: AssemblyVersion("1.0.4.0")]
 
 static class Program
 {
-    public const string Version = "1.0.3";
+    public const string Version = "1.0.4";
     // --demo: made-up places, nothing read from or saved to this PC. "--theme Name" picks its theme (for screenshots).
     public static bool Demo;
     public static string DemoTheme;
@@ -44,7 +44,9 @@ static class Program
             ToolStripManager.Renderer = new DarkMenu();
             Backup.KeyName = "KinetikClock"; Backup.AppTitle = "Kinetik Clock";
             if (!Demo) Backup.OfferRestore();
-            Application.Run(new ClockForm());
+            var app = new ClockForm();
+            using (new KinetikSuite.Shutdown("KinetikClock" + (Demo ? "Demo" : ""), () => { app.Close(); Application.Exit(); }))
+                Application.Run(app);
         }
         if (!Demo) Backup.AfterExit();
     }
@@ -144,16 +146,18 @@ class Settings
                             else if (f.FieldType == typeof(int)) f.SetValue(s, Convert.ToInt32(v));
                             else f.SetValue(s, Convert.ToInt32(v) != 0);
                         }
-                        catch { }
+                        catch { ok = false; }
                     }
         }
         catch { ok = false; }
-        return s;
+        KinetikSuite.SettingsValidation.Sanitize(s); return s;
     }
 
     public void Save()
     {
-        if (Program.Demo || Unreadable) return; // never save defaults over settings that couldn't be read
+        if (Program.Demo || Unreadable) return;
+        KinetikSuite.SettingsValidation.Sanitize(this);
+        if (KinetikSuite.RegistryFiles.CannotSave) return; // never save defaults over settings that couldn't be read
         try
         {
             using (var k = Registry.CurrentUser.CreateSubKey(KeyPath))
@@ -412,7 +416,7 @@ class ClockForm : Form
     readonly DibSurface surface = new DibSurface();
     readonly System.Windows.Forms.Timer tick = new System.Windows.Forms.Timer();
     readonly NotifyIcon tray = new NotifyIcon();
-    readonly ContextMenuStrip menu = new ContextMenuStrip();
+    readonly ContextMenuStrip menu = KinetikSuite.MenuFocus.Attach(new ContextMenuStrip());
     int layer, winW, winH, margin;
     float u = 1;
     bool dragging, moved;
@@ -434,9 +438,11 @@ class ClockForm : Form
         tray.ContextMenuStrip = menu;
         tray.Visible = true;
         tick.Tick += (s, e) => { Tick(); Render(false); };
-        SystemEvents.TimeChanged += (s, e) => { TimeZoneInfo.ClearCachedData(); Render(true); };
+        SystemEvents.TimeChanged += OnTimeChanged;
         SystemEvents.SessionSwitch += OnSession;
     }
+
+    void OnTimeChanged(object sender, EventArgs e) { try { BeginInvoke((Action)(() => { TimeZoneInfo.ClearCachedData(); Tick(); Render(true); })); } catch (InvalidOperationException) { } }
 
     // Nothing redraws while the PC is locked (with seconds on, that's once a second); it catches up on unlock.
     void OnSession(object s, SessionSwitchEventArgs e)
@@ -495,7 +501,7 @@ class ClockForm : Form
     protected override void Dispose(bool disposing)
     {
         surface.Dispose();
-        if (disposing) SystemEvents.SessionSwitch -= OnSession;
+        if (disposing) { SystemEvents.SessionSwitch -= OnSession; SystemEvents.TimeChanged -= OnTimeChanged; }
         if (disposing) { tick.Dispose(); tray.Dispose(); menu.Dispose(); DisposeFonts(); shadow.Dispose(); if (textLayer != null) textLayer.Dispose(); }
         base.Dispose(disposing);
     }
@@ -1145,22 +1151,8 @@ static class Backup
         }
     }
 
-    static bool Reg(string args)
-    {
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo(System.IO.Path.Combine(Environment.SystemDirectory, "reg.exe"), args)
-            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-            using (var p = System.Diagnostics.Process.Start(psi))
-            {
-                p.StandardOutput.ReadToEnd(); p.StandardError.ReadToEnd();
-                return p.WaitForExit(15000) && p.ExitCode == 0;
-            }
-        }
-        catch { return false; }
-    }
+    static bool Reg(string args) { return KinetikSuite.RegistryFiles.Run(args); }
 
-    // A restore may only write this app's own key, so an edited or swapped file can't change anything else.
     static bool FileIsOurs()
     {
         try
@@ -1179,7 +1171,11 @@ static class Backup
         catch { return false; }
     }
 
-    static bool Import() { return FileIsOurs() && Reg("import \"" + FilePath + "\""); }
+    static bool Import()
+    {
+        try { return FileIsOurs() && KinetikSuite.RegistryFiles.Replace(FilePath, new[] { KeyName }); }
+        catch (Exception ex) { Say(ex.Message, MessageBoxIcon.Warning); return false; }
+    }
 
     static void Say(string text, MessageBoxIcon icon) { MessageBox.Show(text, AppTitle, MessageBoxButtons.OK, icon); }
 
