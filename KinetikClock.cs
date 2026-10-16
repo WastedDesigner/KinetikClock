@@ -18,11 +18,11 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Clock")]
 [assembly: AssemblyProduct("Kinetik Clock")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.0.2.0")]
+[assembly: AssemblyVersion("1.0.3.0")]
 
 static class Program
 {
-    public const string Version = "1.0.2";
+    public const string Version = "1.0.3";
     // --demo: made-up places, nothing read from or saved to this PC. "--theme Name" picks its theme (for screenshots).
     public static bool Demo;
     public static string DemoTheme;
@@ -67,7 +67,7 @@ class Place
 class Settings
 {
     const string KeyPath = @"Software\KinetikClock";
-    public int X = int.MinValue, Y = int.MinValue, Width = 300, Scale = 100, Opacity = 92, Layer = 0, Style = 0; // Style: 0 dials, 1 text only
+    public int X = int.MinValue, Y = int.MinValue, Width = 300, Scale = 100, Opacity = CommonMenu.DefaultOpacity, Layer = 0, Style = 0; // Style: 0 dials, 1 text only
     public bool Locked, Snap = true, Seconds, ShowOffset = true, ClickThrough;
     public bool Use24h = CultureInfo.CurrentCulture.DateTimeFormat.ShortTimePattern.Contains("H");
     public string ThemeName = "Midnight", FontName = ""; // "" = Segoe UI Variable Text
@@ -115,7 +115,7 @@ class Settings
             if (attempt > 0) Thread.Sleep(500);
             bool ok;
             s = TryLoad(out ok);
-            if (ok) { Unreadable = false; return s; }
+            if (ok) { Unreadable = false; s.Opacity = CommonMenu.Migrate(s.Opacity); return s; }
         }
         Unreadable = true;
         MessageBox.Show("Kinetik Clock couldn't read its saved settings, so it's showing the default places for now.\n\n" +
@@ -827,6 +827,32 @@ class ClockForm : Form
 
     void Changed() { c.Save(); Tick(); Render(true); }
 
+    // The look, placement, startup and backup options, shared word for word with the other Kinetik apps.
+    CommonMenu Common()
+    {
+        return new CommonMenu
+        {
+            Title = "Kinetik Clock", Version = Program.Version,
+            OpenTheme = () =>
+            {
+                if (picker != null && !picker.IsDisposed) { picker.Activate(); return; }
+                picker = new ThemePicker(c.ThemeName, n => { c.ThemeName = n; Changed(); });
+                picker.Show();
+            },
+            Scale = () => c.Scale, SetScale = v => { c.Scale = v; Changed(); },
+            Widths = new[] { 240, 300, 360 }, CardWidth = () => c.Width, SetCardWidth = v => { c.Width = v; Changed(); },
+            FontName = () => c.FontName, SetFontName = v => { c.FontName = v; Changed(); },
+            Opacity = () => c.Opacity, SetOpacity = v => { c.Opacity = v; Changed(); },
+            Layer = () => c.Layer, SetLayer = SetLayer,
+            Locked = () => c.Locked, SetLocked = v => { c.Locked = v; Changed(); },
+            ClickThrough = () => c.ClickThrough, SetClickThrough = v => { c.ClickThrough = v; Changed(); },
+            Snap = () => c.Snap, SetSnap = v => { c.Snap = v; Changed(); },
+            RunAtStartup = () => Startup.IsOn, SetRunAtStartup = Startup.Set,
+            BackUp = () => { c.Save(); Backup.SaveNow(); }, Restore = Backup.RestoreNow, LastBackup = () => Backup.SavedText,
+            Exit = () => { tray.Visible = false; Application.Exit(); },
+        };
+    }
+
     void BuildMenu()
     {
         var old = menu.Items.Cast<ToolStripItem>().ToList();
@@ -867,48 +893,9 @@ class ClockForm : Form
         style.DropDownItems.Add(Item("Show time difference", c.ShowOffset, () => { c.ShowOffset = !c.ShowOffset; Changed(); }));
         menu.Items.Add(style);
 
-        menu.Items.Add(Item("Theme…", false, () =>
-        {
-            if (picker != null && !picker.IsDisposed) { picker.Activate(); return; }
-            picker = new ThemePicker(c.ThemeName, n => { c.ThemeName = n; Changed(); });
-            picker.Show();
-        }));
-
-        var size = new ToolStripMenuItem("Size");
-        foreach (var s in new[] { 80, 90, 100, 115, 130, 150 }) { int v = s; size.DropDownItems.Add(Item(v + "%", c.Scale == v, () => { c.Scale = v; Changed(); })); }
-        size.DropDownItems.Add(new ToolStripSeparator());
-        foreach (var w in new[] { 240, 300, 360 }) { int v = w; size.DropDownItems.Add(Item(new[] { "Narrow", "Normal", "Wide" }[Array.IndexOf(new[] { 240, 300, 360 }, v)], c.Width == v, () => { c.Width = v; Changed(); })); }
-        menu.Items.Add(size);
-
-        var font = new ToolStripMenuItem("Font");
-        font.DropDownItems.Add(Item("Default", c.FontName == "", () => { c.FontName = ""; Changed(); }));
-        foreach (var n in Draw.FontChoices.Where(Draw.HasFont)) { string v = n; font.DropDownItems.Add(Item(v, c.FontName == v, () => { c.FontName = v; Changed(); })); }
-        menu.Items.Add(font);
-
-        var opacity = new ToolStripMenuItem("Background opacity");
-        foreach (var o in new[] { 100, 92, 80, 65, 50, 30, 0 }) { int v = o; opacity.DropDownItems.Add(Item(v + "%", c.Opacity == v, () => { c.Opacity = v; Changed(); })); }
-        menu.Items.Add(opacity);
-
-        var place = new ToolStripMenuItem("Placement");
-        place.DropDownItems.Add(Item("On the desktop", c.Layer == 0, () => SetLayer(0)));
-        place.DropDownItems.Add(Item("Normal window", c.Layer == 1, () => SetLayer(1)));
-        place.DropDownItems.Add(Item("Always on top", c.Layer == 2, () => SetLayer(2)));
-        place.DropDownItems.Add(new ToolStripSeparator());
-        place.DropDownItems.Add(Item("Lock position", c.Locked, () => { c.Locked = !c.Locked; Changed(); }));
-        place.DropDownItems.Add(Item("Click-through when locked", c.ClickThrough, () => { c.ClickThrough = !c.ClickThrough; Changed(); }));
-        place.DropDownItems.Add(Item("Snap to screen edges", c.Snap, () => { c.Snap = !c.Snap; Changed(); }));
-        menu.Items.Add(place);
-
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(Item("Run at startup", Startup.IsOn, () => Startup.Set(!Startup.IsOn)));
-        var backup = new ToolStripMenuItem("Backup");
-        backup.DropDownItems.Add(Item("Back up settings", false, () => { c.Save(); Backup.SaveNow(); }));
-        backup.DropDownItems.Add(Item("Restore settings…", false, () => Backup.RestoreNow()));
-        backup.DropDownItems.Add(new ToolStripMenuItem("Last backup: " + Backup.SavedText) { Enabled = false });
-        menu.Items.Add(backup);
         menu.Items.Add(Item("Windows date and time settings", false, () => { try { System.Diagnostics.Process.Start("ms-settings:dateandtime"); } catch { } }));
-        menu.Items.Add(new ToolStripMenuItem("Kinetik Clock " + Program.Version) { Enabled = false });
-        menu.Items.Add(Item("Exit", false, () => { tray.Visible = false; Application.Exit(); }));
+        menu.Items.Add(new ToolStripSeparator());
+        Common().AddAll(menu.Items);
     }
 
     // Changing the window's layer needs a fresh window handle, since TOPMOST is a creation style.
@@ -1232,3 +1219,107 @@ static class Backup
         try { System.Diagnostics.Process.Start(Application.ExecutablePath); } catch { }
     }
 }
+
+// ======================================================================= The right-click menu every Kinetik widget shares
+// The look, placement, startup and backup options, in the same order and the same words in every Kinetik app, so they
+// feel like one set. Each app adds its own items above. Same code in every Kinetik app.
+#pragma warning disable 0649 // the hooks an app has no use for stay null
+class CommonMenu
+{
+    public static readonly int[] Scales = { 80, 90, 100, 115, 125, 150 };
+    public static readonly int[] Opacities = { 100, 95, 80, 65, 50, 30, 0 };
+    public const int DefaultOpacity = 95;
+    public static readonly string[] Fonts = { "Segoe UI Variable Text", "Segoe UI", "Bahnschrift", "Calibri", "Aptos", "Inter", "Cascadia Code", "Consolas", "Verdana", "Georgia" };
+
+    // Settings saved before the shared default changed from 92% to 95% move with it; any other choice is kept.
+    public static int Migrate(int opacity) { return opacity == 92 ? DefaultOpacity : opacity; }
+
+    public string Title, Version;
+    public Action OpenTheme;                                        // opens the theme picker (or the page with it)
+    public Func<int> Scale; public Action<int> SetScale;
+    public int[] Widths; public Func<int> CardWidth; public Action<int> SetCardWidth; // optional: Narrow, Normal, Wide
+    public Func<string> FontName; public Action<string> SetFontName;   // optional; "" = the default font
+    public Func<int> Opacity; public Action<int> SetOpacity;
+    public Func<int> Layer; public Action<int> SetLayer;
+    public Func<bool> Locked; public Action<bool> SetLocked;
+    public Func<bool> ClickThrough; public Action<bool> SetClickThrough; // optional
+    public Func<bool> Snap; public Action<bool> SetSnap;
+    public string LockText = "Lock position";
+    public Action OpenSettings;                                     // optional: the app's Settings window
+    public Func<bool> RunAtStartup; public Action<bool> SetRunAtStartup;   // optional
+    public Action BackUp, Restore; public Func<string> LastBackup; // optional
+    public Action Exit;                                         // optional
+
+    static ToolStripMenuItem Item(string text, bool check, Action click)
+    {
+        var it = new ToolStripMenuItem(text) { Checked = check };
+        it.Click += (s, e) => click();
+        return it;
+    }
+
+    static bool HasFont(string name)
+    {
+        try { using (var f = new FontFamily(name)) return f.Name == name; } catch { return false; }
+    }
+
+    // Appearance and placement: Theme, Size, Font, Background opacity, Placement.
+    public void AddLook(ToolStripItemCollection items)
+    {
+        if (OpenTheme != null) items.Add(Item("Theme…", false, OpenTheme));
+
+        var size = new ToolStripMenuItem("Size");
+        foreach (var s in Scales) { int v = s; size.DropDownItems.Add(Item(v + "%", Scale() == v, () => SetScale(v))); }
+        if (Widths != null)
+        {
+            size.DropDownItems.Add(new ToolStripSeparator());
+            string[] names = { "Narrow", "Normal", "Wide" };
+            for (int i = 0; i < Widths.Length && i < 3; i++) { int v = Widths[i]; size.DropDownItems.Add(Item(names[i], CardWidth() == v, () => SetCardWidth(v))); }
+        }
+        items.Add(size);
+
+        if (FontName != null)
+        {
+            var font = new ToolStripMenuItem("Font");
+            font.DropDownItems.Add(Item("Default", FontName() == "", () => SetFontName("")));
+            foreach (var n in Fonts.Where(HasFont)) { string v = n; font.DropDownItems.Add(Item(v, FontName() == v, () => SetFontName(v))); }
+            if (FontName() != "" && !Fonts.Contains(FontName())) font.DropDownItems.Add(Item(FontName(), true, () => { }));
+            items.Add(font);
+        }
+
+        var opacity = new ToolStripMenuItem("Background opacity");
+        foreach (var o in Opacities) { int v = o; opacity.DropDownItems.Add(Item(v + "%", Opacity() == v, () => SetOpacity(v))); }
+        if (!Opacities.Contains(Opacity())) opacity.DropDownItems.Add(Item(Opacity() + "%", true, () => { }));
+        items.Add(opacity);
+
+        var place = new ToolStripMenuItem("Placement");
+        string[] layers = { "On the desktop", "Normal window", "Always on top" };
+        for (int i = 0; i < 3; i++) { int v = i; place.DropDownItems.Add(Item(layers[i], Layer() == v, () => SetLayer(v))); }
+        place.DropDownItems.Add(new ToolStripSeparator());
+        place.DropDownItems.Add(Item(LockText, Locked(), () => SetLocked(!Locked())));
+        if (ClickThrough != null) place.DropDownItems.Add(Item("Click-through when locked", ClickThrough(), () => SetClickThrough(!ClickThrough())));
+        place.DropDownItems.Add(Item("Snap to screen edges", Snap(), () => SetSnap(!Snap())));
+        items.Add(place);
+    }
+
+    // The rest: Settings…, Run at startup, Backup, then the version and Exit.
+    public void AddEnd(ToolStripItemCollection items)
+    {
+        items.Add(new ToolStripSeparator());
+        if (OpenSettings != null) items.Add(Item("Settings…", false, OpenSettings));
+        if (RunAtStartup != null) items.Add(Item("Run at startup", RunAtStartup(), () => SetRunAtStartup(!RunAtStartup())));
+        if (BackUp != null)
+        {
+            var backup = new ToolStripMenuItem("Backup");
+            backup.DropDownItems.Add(Item("Back up settings", false, BackUp));
+            backup.DropDownItems.Add(Item("Restore settings…", false, Restore));
+            backup.DropDownItems.Add(new ToolStripMenuItem("Last backup: " + LastBackup()) { Enabled = false });
+            items.Add(backup);
+        }
+        items.Add(new ToolStripSeparator());
+        items.Add(new ToolStripMenuItem(Title + " " + Version) { Enabled = false });
+        if (Exit != null) items.Add(Item("Exit", false, Exit));
+    }
+
+    public void AddAll(ToolStripItemCollection items) { AddLook(items); AddEnd(items); }
+}
+#pragma warning restore 0649
