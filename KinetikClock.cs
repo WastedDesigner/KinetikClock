@@ -45,6 +45,8 @@ static class Program
             Backup.KeyName = "KinetikClock"; Backup.AppTitle = "Kinetik Clock";
             if (!Demo) Backup.OfferRestore();
             var app = new ClockForm();
+            // --settings opens the settings window once the app has started.
+            if (args.Contains("--settings")) { EventHandler once = null; once = (s2, e2) => { Application.Idle -= once; app.ShowSettings(); }; Application.Idle += once; }
             using (new KinetikSuite.Shutdown("KinetikClock" + (Demo ? "Demo" : ""), () => { app.Close(); Application.Exit(); }))
                 Application.Run(app);
         }
@@ -862,12 +864,52 @@ class ClockForm : Form
 
     void Changed() { c.Save(); Tick(); Render(true); }
 
+    KinetikSuite.SettingsWindow settings;
+
+    // Settings…: this app's own pages, then the Look, Placement, General and About pages every Kinetik widget shares.
+    public void ShowSettings(string page = null)
+    {
+        if (settings != null && !settings.IsDisposed) { settings.Activate(); if (page != null) settings.ShowPage(page); return; }
+        var pages = new List<KinetikSuite.SettingsWindow.Page>
+        {
+            new KinetikSuite.SettingsWindow.Page { Name = "Clocks", Glyph = "clock", Sub = "The places shown, and how their times look.", Build = b =>
+            {
+                b.Section("Places");
+                var places = c.List;
+                for (int i = 0; i < places.Count; i++)
+                {
+                    int idx = i; var p = places[i];
+                    Action<List<Place>> apply = l => { c.List = l; Changed(); b.Refresh(); };
+                    var buttons = new List<KinetikSuite.FlatButton>
+                    {
+                        b.Button("Rename…", () => { var n = Prompt("Rename", "Name shown on the clock:", p.Name); if (n == null) return; var l = c.List; l[idx].Name = n.Trim(); apply(l); }),
+                    };
+                    if (idx > 0) buttons.Add(b.Small("↑", () => { var l = c.List; var x = l[idx]; l.RemoveAt(idx); l.Insert(idx - 1, x); apply(l); }));
+                    if (idx < places.Count - 1) buttons.Add(b.Small("↓", () => { var l = c.List; var x = l[idx]; l.RemoveAt(idx); l.Insert(idx + 1, x); apply(l); }));
+                    buttons.Add(b.Button("Remove", () => { var l = c.List; l.RemoveAt(idx); apply(l); }));
+                    b.Buttons(p.Name == "" ? "Local" : p.Name, p.Zone == "" ? "This PC's time zone" : p.Tz.DisplayName, buttons.ToArray());
+                }
+                b.Buttons("Add a place", "Any city or time zone", b.Button("Add…", () => { AddPlace(); b.Refresh(); }, true));
+                b.Section("Style");
+                b.Choice("Style", null, new[] { "Dials", "Compact" }, c.Style, v => { c.Style = v; Changed(); }, 140);
+                b.Switch("24-hour time", null, c.Use24h, v => { c.Use24h = v; Changed(); });
+                b.Switch("Show seconds", null, c.Seconds, v => { c.Seconds = v; Changed(); });
+                b.Switch("Show time difference", "How far ahead or behind each place is", c.ShowOffset, v => { c.ShowOffset = v; Changed(); });
+                b.Buttons("Windows date and time", "Your own time zone and clock sync", b.Button("Open", () => { try { System.Diagnostics.Process.Start("ms-settings:dateandtime"); } catch { } }));
+            } },
+        };
+        pages.AddRange(Common().ForSettings().Pages());
+        settings = new KinetikSuite.SettingsWindow("Kinetik Clock", Program.Version, pages, page);
+        settings.Show();
+    }
+
     // The look, placement, startup and backup options, shared word for word with the other Kinetik apps.
     CommonMenu Common()
     {
         return new CommonMenu
         {
             Title = "Kinetik Clock", Version = Program.Version,
+            OpenSettings = () => ShowSettings(),
             OpenTheme = () =>
             {
                 if (picker != null && !picker.IsDisposed) { picker.Activate(); return; }
@@ -1353,6 +1395,21 @@ class CommonMenu
         items.Add(new ToolStripSeparator());
         items.Add(new ToolStripMenuItem(Title + " " + Version) { Enabled = false });
         if (Exit != null) items.Add(Item("Exit", false, Exit));
+    }
+
+    // The same options as the shared pages of a settings window (Look, Placement, General, About).
+    public KinetikSuite.SettingsWindow.Common ForSettings()
+    {
+        return new KinetikSuite.SettingsWindow.Common
+        {
+            Title = Title, Version = Version, OpenTheme = OpenTheme,
+            Scale = Scale, SetScale = SetScale, Scales = Scales, Widths = Widths, CardWidth = CardWidth, SetCardWidth = SetCardWidth,
+            FontName = FontName, SetFontName = SetFontName, Fonts = Fonts.Where(HasFont).ToArray(),
+            Opacity = Opacity, SetOpacity = SetOpacity, Opacities = Opacities,
+            Layer = Layer, SetLayer = SetLayer, Locked = Locked, SetLocked = SetLocked, LockText = LockText,
+            ClickThrough = ClickThrough, SetClickThrough = SetClickThrough, Snap = Snap, SetSnap = SetSnap,
+            RunAtStartup = RunAtStartup, SetRunAtStartup = SetRunAtStartup, BackUp = BackUp, Restore = Restore, LastBackup = LastBackup,
+        };
     }
 
     public void AddAll(ToolStripItemCollection items) { AddLook(items); AddEnd(items); }
