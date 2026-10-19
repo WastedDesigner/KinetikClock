@@ -19,7 +19,7 @@ It's a small portable app with no installer and no account. It's a companion to 
 
 - **Any number of places**, each with its own name and Windows time zone (daylight saving handled by Windows)
 - **Analog dial per place** that turns dark at night
-- **Themes** in Kinetik's style, a choice of fonts, size and background opacity
+- **Themes** in the Kinetik apps' style, a choice of fonts, size and background opacity
 - **Placement:** drag anywhere, snap to edges, lock position
 - **Settings backup** next to the exe, offered again on a fresh Windows
 
