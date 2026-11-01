@@ -25,13 +25,13 @@ static class Program
     public const string Version = "2.1.0";
     // --demo: made-up places, nothing read from or saved to this PC. "--theme Name" picks its theme (for screenshots).
     public static bool Demo;
-    public static string DemoTheme; public static int DemoStyle;
+    public static string DemoTheme; public static int DemoStyle; public static bool DemoFull;
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
     [STAThread]
     static void Main(string[] args)
     {
-        Demo = args.Contains("--demo");
+        Demo = args.Contains("--demo"); DemoFull = args.Contains("--full"); // --full: seconds, offsets, scale and places like a real setup
         int ti = Array.IndexOf(args, "--theme");
         if (ti >= 0 && ti + 1 < args.Length) DemoTheme = args[ti + 1];
         int si = Array.IndexOf(args, "--style");
@@ -112,8 +112,8 @@ class Settings
         if (Program.Demo)
             return new Settings
             {
-                Layer = 2, Style = Program.DemoStyle, ThemeName = Program.DemoTheme ?? "Midnight", X = 240, Y = 160, ShowOffset = false,
-                Places = "London=GMT Standard Time\nNew York=Eastern Standard Time\nTokyo=Tokyo Standard Time\nSydney=AUS Eastern Standard Time\nSan Francisco=Pacific Standard Time"
+                Layer = 2, Style = Program.DemoStyle, ThemeName = Program.DemoTheme ?? "Midnight", X = 240, Y = 160, ShowOffset = Program.DemoFull, Seconds = Program.DemoFull, Scale = Program.DemoFull ? 106 : 100, Opacity = Program.DemoFull ? 95 : CommonMenu.DefaultOpacity,
+                Places = (Program.DemoFull ? "Local=" + (char)10 + "" : "") + "London=GMT Standard Time\nNew York=Eastern Standard Time\nTokyo=Tokyo Standard Time\nSydney=AUS Eastern Standard Time\nSan Francisco=Pacific Standard Time"
             };
         Settings s = null;
         for (int attempt = 0; attempt < 4; attempt++)
@@ -624,6 +624,15 @@ class ClockForm : Form
     }
 
     // ---- painting
+    // "Today · same time · Sun", shortened to what fits: drop "Today · ", then the weekday, then the day word entirely.
+    string OffsetLine(Graphics g, DateTime local, DateTime there, float width)
+    {
+        string full = OffsetText(local, there) + " · " + there.ToString("ddd");
+        foreach (var t in new[] { full, full.Replace("Today · ", ""), OffsetText(local, there).Replace("Today · ", ""), OffsetText(local, there).Split((char)183).Last().Trim() })
+            if (g.MeasureString(t, subF, 1000, fmtL).Width <= width) return t;
+        return full;
+    }
+
     // 0 and 1 are the original styles. 2 to 5 keep the same multi-city card with a different row.
     static readonly string[] StyleNames = { "Dials", "Compact", "Daylight", "Orbit", "Big type", "Galaxy" };
     bool Dial { get { return c.Style == 0 || c.Style == 3 || c.Style == 5; } }
@@ -696,13 +705,13 @@ class ClockForm : Form
     void EnsureFonts()
     {
         float dpiFix = DeviceDpi / 96f;
-        var key = Fam + "|" + u + "|" + dpiFix + "|" + c.Style;
+        var key = Fam + "|" + u + "|" + dpiFix + "|" + c.Style + c.Seconds;
         if (key == fontKey) return;
         DisposeFonts();
         var fam = Fam;
         nameF = new Font(fam, 11 * u / dpiFix, FontStyle.Bold, GraphicsUnit.Point);
         subF = new Font(fam, 8.5f * u / dpiFix, GraphicsUnit.Point);
-        timeF = new Font(fam, (c.Style == 4 ? 25 : Dial ? 19 : 16) * u / dpiFix, c.Style == 4 ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point);
+        timeF = new Font(fam, (c.Style == 4 ? (c.Seconds ? 20 : 25) : Dial ? 19 : 16) * u / dpiFix, c.Style == 4 ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point);
         ampmF = new Font(fam, 8.5f * u / dpiFix, FontStyle.Bold, GraphicsUnit.Point);
         fontKey = key;
     }
@@ -842,7 +851,7 @@ class ClockForm : Form
                     // daylight: the city's 24 hours as a bar, daytime lit, with a glowing marker for now
                     float bh = 3.5f * u, by = y + rh - 11 * u, bx = x, bw = card.Right - pad - x;
                     g.DrawString(name, nameF, text, new RectangleF(x, y + rh * 0.02f, right - x, rh * 0.5f), fmtL);
-                    g.DrawString(OffsetText(local, there) + " · " + there.ToString("ddd"), subF, sub, new RectangleF(x, y + rh * 0.34f, right - x, rh * 0.4f), fmtL);
+                    g.DrawString(OffsetLine(g, local, there, right - x), subF, sub, new RectangleF(x, y + rh * 0.34f, right - x, rh * 0.4f), fmtL);
                     using (var pb = new SolidBrush(Color.FromArgb(70, th.Sub))) g.FillRectangle(pb, bx, by, bw, bh);
                     using (var pb = new SolidBrush(Color.FromArgb(200, 255, 196, 64))) g.FillRectangle(pb, bx + bw * 0.25f, by, bw * 0.5f, bh);
                     float mx = bx + bw * (float)((there.Hour + there.Minute / 60.0) / 24.0);
@@ -862,7 +871,7 @@ class ClockForm : Form
                 else if (c.ShowOffset && TwoLine)
                 {
                     g.DrawString(name, nameF, text, new RectangleF(x, y + rh * 0.08f, right - x, rh / 2), fmtL);
-                    g.DrawString(OffsetText(local, there) + " · " + there.ToString("ddd"), subF, sub, new RectangleF(x, y + rh * 0.45f, right - x, rh / 2), fmtL);
+                    g.DrawString(OffsetLine(g, local, there, right - x), subF, sub, new RectangleF(x, y + rh * 0.45f, right - x, rh / 2), fmtL);
                 }
                 else
                 {
