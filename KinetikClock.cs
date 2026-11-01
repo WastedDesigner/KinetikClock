@@ -18,14 +18,14 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Clock")]
 [assembly: AssemblyProduct("Kinetik Clock")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("2.0.0.0")]
+[assembly: AssemblyVersion("2.1.0.0")]
 
 static class Program
 {
-    public const string Version = "2.0.0";
+    public const string Version = "2.1.0";
     // --demo: made-up places, nothing read from or saved to this PC. "--theme Name" picks its theme (for screenshots).
     public static bool Demo;
-    public static string DemoTheme;
+    public static string DemoTheme; public static int DemoStyle;
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
     [STAThread]
@@ -34,6 +34,8 @@ static class Program
         Demo = args.Contains("--demo");
         int ti = Array.IndexOf(args, "--theme");
         if (ti >= 0 && ti + 1 < args.Length) DemoTheme = args[ti + 1];
+        int si = Array.IndexOf(args, "--style");
+        if (si >= 0 && si + 1 < args.Length) int.TryParse(args[si + 1], out DemoStyle);
         bool created;
         using (new Mutex(true, Demo ? @"Local\KinetikClockDemo" : @"Local\KinetikClock", out created))
         {
@@ -41,7 +43,7 @@ static class Program
             SetProcessDPIAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            ToolStripManager.Renderer = new DarkMenu();
+            ToolStripManager.Renderer = KinetikSuite.Look.Current.MenuRenderer();
             Backup.KeyName = "KinetikClock"; Backup.AppTitle = "Kinetik Clock";
             if (!Demo) Backup.OfferRestore();
             var app = new ClockForm();
@@ -71,7 +73,7 @@ class Place
 class Settings
 {
     const string KeyPath = @"Software\KinetikClock";
-    public int X = int.MinValue, Y = int.MinValue, Width = 300, Scale = 100, Opacity = CommonMenu.DefaultOpacity, Layer = 0, Style = 0; // Style: 0 dials, 1 text only
+    public int X = int.MinValue, Y = int.MinValue, Width = 300, Scale = 100, Opacity = CommonMenu.DefaultOpacity, Layer = 0, Style = 0; // Style: 0 dials, 1 text only, 2 daylight bar, 3 orbit ring, 4 big type, 5 galaxy
     public bool Locked, Snap = true, Seconds, ShowOffset = true, ClickThrough;
     public bool Use24h = CultureInfo.CurrentCulture.DateTimeFormat.ShortTimePattern.Contains("H");
     public string ThemeName = "Midnight", FontName = ""; // "" = Segoe UI Variable Text
@@ -110,7 +112,7 @@ class Settings
         if (Program.Demo)
             return new Settings
             {
-                Layer = 2, ThemeName = Program.DemoTheme ?? "Midnight", X = 240, Y = 160, ShowOffset = false,
+                Layer = 2, Style = Program.DemoStyle, ThemeName = Program.DemoTheme ?? "Midnight", X = 240, Y = 160, ShowOffset = false,
                 Places = "London=GMT Standard Time\nNew York=Eastern Standard Time\nTokyo=Tokyo Standard Time\nSydney=AUS Eastern Standard Time\nSan Francisco=Pacific Standard Time"
             };
         Settings s = null;
@@ -448,13 +450,15 @@ class ClockForm : Form
     readonly ContextMenuStrip menu = KinetikSuite.MenuFocus.Attach(new ContextMenuStrip());
     int layer, winW, winH, margin;
     float u = 1;
-    bool dragging, moved;
+    bool dragging, moved, resizing;
+    int startScale, startW;
     Point grab, downAt;
     string lastKey;
     ThemePicker picker;
 
     public ClockForm()
     {
+        Widgets.Attach(this, (dx, dy) => { c.X += dx; c.Y += dy; SetWindowPos(Handle, IntPtr.Zero, c.X, c.Y, 0, 0, 0x1 | 0x4 | 0x10); }, () => c.Save(), () => c.Locked);
         layer = c.Layer;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -550,17 +554,30 @@ class ClockForm : Form
         if (e.Button == MouseButtons.Left)
         {
             downAt = Cursor.Position; moved = false;
-            if (!c.Locked) { dragging = true; grab = new Point(Cursor.Position.X - c.X, Cursor.Position.Y - c.Y); }
+            if (!c.Locked && OnGrip(e.Location)) { resizing = true; startScale = c.Scale; startW = winW - 2 * margin; }
+            else if (!c.Locked) { dragging = true; grab = new Point(Cursor.Position.X - c.X, Cursor.Position.Y - c.Y); }
         }
         base.OnMouseDown(e);
     }
 
+    // Bottom-right corner of the card: drag to resize (changes Size %).
+    bool OnGrip(Point p) { int g = (int)(20 * u); return p.X > winW - margin - g && p.Y > winH - margin - g && p.X < winW - margin && p.Y < winH - margin; }
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
+        if (resizing)
+        {
+            int s = (int)Math.Round(startScale * (startW + Cursor.Position.X - downAt.X) / (double)startW);
+            c.Scale = Math.Max(50, Math.Min(300, s)); moved = true;
+            Render(false);
+            return;
+        }
+        if (!dragging) Cursor = !c.Locked && OnGrip(e.Location) ? Cursors.SizeNWSE : Cursors.Default;
         if (dragging && (moved || Math.Abs(Cursor.Position.X - downAt.X) + Math.Abs(Cursor.Position.Y - downAt.Y) > 4))
         {
             moved = true;
             var p = Snap(new Point(Cursor.Position.X - grab.X, Cursor.Position.Y - grab.Y));
+            Widgets.Drag(this, p.X - c.X, p.Y - c.Y);
             c.X = p.X; c.Y = p.Y;
             SetWindowPos(Handle, IntPtr.Zero, p.X, p.Y, 0, 0, 0x1 | 0x4 | 0x10); // NOSIZE | NOZORDER | NOACTIVATE
             Cursor = Cursors.SizeAll;
@@ -572,8 +589,8 @@ class ClockForm : Form
     {
         if (e.Button == MouseButtons.Left)
         {
-            if (dragging && moved) c.Save();
-            dragging = false;
+            if ((dragging || resizing) && moved) c.Save(); Widgets.Commit(this);
+            dragging = resizing = false;
             Cursor = Cursors.Default;
         }
         else if (e.Button == MouseButtons.Right) menu.Show(Cursor.Position);
@@ -584,6 +601,7 @@ class ClockForm : Form
     Point Snap(Point p)
     {
         if (!c.Snap) return p;
+        p = Widgets.Snap(this, p);
         var wa = Screen.FromPoint(Cursor.Position).WorkingArea;
         int gap = (int)(12 * u), reach = (int)(18 * u);
         int left = p.X + margin, top = p.Y + margin, right = p.X + winW - margin, bottom = p.Y + winH - margin;
@@ -606,7 +624,11 @@ class ClockForm : Form
     }
 
     // ---- painting
-    float RowH { get { return (c.Style == 0 ? 54 : 40) * u; } }
+    // 0 and 1 are the original styles. 2 to 5 keep the same multi-city card with a different row.
+    static readonly string[] StyleNames = { "Dials", "Compact", "Daylight", "Orbit", "Big type", "Galaxy" };
+    bool Dial { get { return c.Style == 0 || c.Style == 3 || c.Style == 5; } }
+    bool TwoLine { get { return Dial || c.Style == 2 || c.Style == 4; } }
+    float RowH { get { return (c.Style == 1 ? 40 : c.Style == 4 ? 60 : c.Style == 2 ? 58 : 54) * u; } }
 
     string TimeText(DateTime t, out string suffix)
     {
@@ -633,6 +655,7 @@ class ClockForm : Form
         if (IsDisposed || !IsHandleCreated) return;
         var places = c.List;
         var nowUtc = DateTime.UtcNow;
+        if (!Program.Demo && places.Count > 0) Widgets.Status(TimeZoneInfo.ConvertTimeFromUtc(nowUtc, places[0].Tz).ToString(c.Use24h ? "HH:mm" : "h:mm tt") + " " + places[0].Name);
         string key = c.Places + "|" + c.Style + c.ThemeName + c.Use24h + c.Seconds + c.ShowOffset + c.Width + c.Scale + c.Opacity
             + "|" + nowUtc.ToString(c.Seconds ? "HHmmss" : "HHmm") + Theme.Get(c.ThemeName).Name;
         if (key == lastKey && !force) return;
@@ -652,8 +675,10 @@ class ClockForm : Form
         EnsurePosition();
         var bmp = surface.Canvas(winW, winH);
         using (var g = Graphics.FromImage(bmp)) PaintCard(g, places, nowUtc, cardW, cardH, pad);
+        var shot = Program.Demo ? Environment.GetEnvironmentVariable("KINETIK_SHOT") : null; // demo only: save the rendered card for screenshots
+        if (shot != null) try { bmp.Save(shot); } catch { }
         surface.Push(Handle, c.X, c.Y);
-        ShowWindow(Handle, 8); // SW_SHOWNA
+        Widgets.Publish(Handle, margin); ShowWindow(Handle, Widgets.Hidden ? 0 : 8); // SW_SHOWNA
         if (layer == 0) SetWindowPos(Handle, new IntPtr(1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10);       // bottom of the pile
         else if (layer == 2) SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10); // stay on top
     }
@@ -677,7 +702,7 @@ class ClockForm : Form
         var fam = Fam;
         nameF = new Font(fam, 11 * u / dpiFix, FontStyle.Bold, GraphicsUnit.Point);
         subF = new Font(fam, 8.5f * u / dpiFix, GraphicsUnit.Point);
-        timeF = new Font(fam, (c.Style == 0 ? 19 : 16) * u / dpiFix, GraphicsUnit.Point);
+        timeF = new Font(fam, (c.Style == 4 ? 25 : Dial ? 19 : 16) * u / dpiFix, c.Style == 4 ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point);
         ampmF = new Font(fam, 8.5f * u / dpiFix, FontStyle.Bold, GraphicsUnit.Point);
         fontKey = key;
     }
@@ -743,7 +768,14 @@ class ClockForm : Form
         using (var p = Draw.Round(card, rad))
         {
             using (var b = new SolidBrush(Color.FromArgb(alpha, th.Bg))) g.FillPath(b, p);
-            using (var pen = new Pen(th.Line, 1)) g.DrawPath(pen, p);
+            if (c.Style == 5)
+            {
+                // galaxy: a diagonal accent tint and a gradient edge from the accent through blue to the line colour
+                using (var b = new LinearGradientBrush(card, Color.FromArgb(alpha * 55 / 255, th.Accent), Color.FromArgb(0, th.Accent), 45f) { InterpolationColors = new ColorBlend { Colors = new[] { Color.FromArgb(alpha * 55 / 255, th.Accent), Color.FromArgb(0, th.Accent), Color.FromArgb(0, th.Accent) }, Positions = new[] { 0f, 0.45f, 1f } } }) g.FillPath(b, p);
+                using (var eb = new LinearGradientBrush(card, th.Accent, th.Line, 45f) { InterpolationColors = new ColorBlend { Colors = new[] { th.Accent, Draw.Mix(th.Accent, Color.FromArgb(29, 123, 219), 0.6f), th.Line }, Positions = new[] { 0f, 0.4f, 1f } } })
+                using (var pen = new Pen(eb, 1.6f * u)) g.DrawPath(pen, p);
+            }
+            else using (var pen = new Pen(th.Line, 1)) g.DrawPath(pen, p);
         }
 
         var local = DateTime.Now;
@@ -754,6 +786,7 @@ class ClockForm : Form
                 g.DrawString("Right-click to add a place", f, b, card.X + pad, card.Y + pad);
             return;
         }
+
 
         EnsureFonts();
         using (var text = new SolidBrush(th.Text))
@@ -767,12 +800,17 @@ class ClockForm : Form
                 if (i > 0) using (var pen = new Pen(th.Line, 1)) g.DrawLine(pen, card.X + pad, y, card.Right - pad, y);
 
                 float x = card.X + pad;
-                if (c.Style == 0)
+                if (Dial)
                 {
-                    float d = 36 * u;
-                    DrawDial(g, new RectangleF(x, y + (rh - d) / 2, d, d), there, th);
+                    float d = (c.Style == 3 ? 44 : 36) * u;
+                    var dr = new RectangleF(x, y + (rh - d) / 2, d, d);
+                    if (c.Style == 3) { DrawOrbit(g, dr, there, th); dr.Inflate(-6 * u, -6 * u); }
+                    if (c.Style == 5) // galaxy: a soft accent halo behind each dial
+                        foreach (var k in new[] { 6f, 3f }) using (var hb = new SolidBrush(Color.FromArgb(k > 4 ? 16 : 30, th.Accent))) g.FillEllipse(hb, RectangleF.Inflate(dr, k * u, k * u));
+                    DrawDial(g, dr, there, th);
                     x += d + 12 * u;
                 }
+                else if (TwoLine) { }
                 else
                 {
                     // a small sun or moon dot
@@ -799,7 +837,29 @@ class ClockForm : Form
 
                 // name and offset on the left
                 string name = pl.Name == "" ? "Local" : pl.Name;
-                if (c.ShowOffset && c.Style == 0)
+                if (TwoLine && c.Style == 2)
+                {
+                    // daylight: the city's 24 hours as a bar, daytime lit, with a glowing marker for now
+                    float bh = 3.5f * u, by = y + rh - 11 * u, bx = x, bw = card.Right - pad - x;
+                    g.DrawString(name, nameF, text, new RectangleF(x, y + rh * 0.02f, right - x, rh * 0.5f), fmtL);
+                    g.DrawString(OffsetText(local, there) + " · " + there.ToString("ddd"), subF, sub, new RectangleF(x, y + rh * 0.34f, right - x, rh * 0.4f), fmtL);
+                    using (var pb = new SolidBrush(Color.FromArgb(70, th.Sub))) g.FillRectangle(pb, bx, by, bw, bh);
+                    using (var pb = new SolidBrush(Color.FromArgb(200, 255, 196, 64))) g.FillRectangle(pb, bx + bw * 0.25f, by, bw * 0.5f, bh);
+                    float mx = bx + bw * (float)((there.Hour + there.Minute / 60.0) / 24.0);
+                    var mc = there.Hour >= 6 && there.Hour < 18 ? Color.FromArgb(255, 196, 64) : th.Accent; // amber by day, accent by night
+                    using (var pb = new SolidBrush(Color.FromArgb(70, mc))) g.FillEllipse(pb, mx - 7 * u, by + bh / 2 - 7 * u, 14 * u, 14 * u);
+                    using (var pb = new SolidBrush(th.Text)) g.FillEllipse(pb, mx - 3 * u, by + bh / 2 - 3 * u, 6 * u, 6 * u);
+                }
+                else if (c.Style == 4)
+                {
+                    // big type: the name small above the time, with a thin line that fills through the hour
+                    g.DrawString(name.ToUpperInvariant(), subF, sub, new RectangleF(x, y + rh * 0.04f, right - x, rh * 0.3f), fmtL);
+                    g.DrawString(OffsetText(local, there).Split('·').Last().Trim() + " · " + there.ToString("ddd"), subF, sub, new RectangleF(x, y + rh * 0.62f, right - x, rh * 0.3f), fmtL);
+                    float ly = y + rh - 6 * u, lw = card.Right - pad - x;
+                    using (var pb = new SolidBrush(Color.FromArgb(50, th.Sub))) g.FillRectangle(pb, x, ly, lw, 2 * u);
+                    using (var pb = new SolidBrush(th.Accent)) g.FillRectangle(pb, x, ly, lw * (there.Minute * 60 + there.Second) / 3600f, 2 * u);
+                }
+                else if (c.ShowOffset && TwoLine)
                 {
                     g.DrawString(name, nameF, text, new RectangleF(x, y + rh * 0.08f, right - x, rh / 2), fmtL);
                     g.DrawString(OffsetText(local, there) + " · " + there.ToString("ddd"), subF, sub, new RectangleF(x, y + rh * 0.45f, right - x, rh / 2), fmtL);
@@ -819,6 +879,18 @@ class ClockForm : Form
     }
 
     // A small analog face: light by day, dark by night, with the theme's accent as the second hand.
+    // A ring of the city's 24 hours, noon at the top: the daytime half lit, with a glowing dot where it is now.
+    void DrawOrbit(Graphics g, RectangleF r, DateTime t, Theme th)
+    {
+        var ring = r; ring.Inflate(-2 * u, -2 * u);
+        using (var pen = new Pen(Color.FromArgb(90, th.Sub), 2.2f * u)) g.DrawEllipse(pen, ring);
+        using (var pen = new Pen(Color.FromArgb(210, 255, 196, 64), 2.2f * u)) g.DrawArc(pen, ring, 180, 180);
+        double a = ((t.Hour + t.Minute / 60.0) / 24.0 * 360 + 90) * Math.PI / 180;
+        float cx = ring.X + ring.Width / 2 + (float)Math.Cos(a) * ring.Width / 2, cy = ring.Y + ring.Height / 2 + (float)Math.Sin(a) * ring.Height / 2;
+        using (var b = new SolidBrush(Color.FromArgb(70, th.Accent))) g.FillEllipse(b, cx - 5 * u, cy - 5 * u, 10 * u, 10 * u);
+        using (var b = new SolidBrush(th.Accent)) g.FillEllipse(b, cx - 2.6f * u, cy - 2.6f * u, 5.2f * u, 5.2f * u);
+    }
+
     void DrawDial(Graphics g, RectangleF r, DateTime t, Theme th)
     {
         float h = t.Hour + t.Minute / 60f;
@@ -850,6 +922,7 @@ class ClockForm : Form
         };
         hand((t.Hour % 12 + t.Minute / 60.0) / 12, 0.5f, 2.4f * u, ink);
         hand((t.Minute + t.Second / 60.0) / 60, 0.74f, 1.8f * u, ink);
+        if (c.Seconds && c.Style == 5) hand(t.Second / 60.0, 0.8f, 3.4f * u, Color.FromArgb(55, th.Accent)); // soft glow under the seconds hand
         if (c.Seconds) hand(t.Second / 60.0, 0.8f, 1 * u, th.Accent);
         using (var b = new SolidBrush(c.Seconds ? th.Accent : ink)) g.FillEllipse(b, cx - 2 * u, cy - 2 * u, 4 * u, 4 * u);
     }
@@ -891,7 +964,7 @@ class ClockForm : Form
                 }
                 b.Buttons("Add a place", "Any city or time zone", b.Button("Add…", () => { AddPlace(); b.Refresh(); }, true));
                 b.Section("Style");
-                b.Choice("Style", null, new[] { "Dials", "Compact" }, c.Style, v => { c.Style = v; Changed(); }, 140);
+                b.Choice("Style", null, StyleNames, c.Style, v => { c.Style = v; Changed(); }, 140);
                 b.Switch("24-hour time", null, c.Use24h, v => { c.Use24h = v; Changed(); });
                 b.Switch("Show seconds", null, c.Seconds, v => { c.Seconds = v; Changed(); });
                 b.Switch("Show time difference", "How far ahead or behind each place is", c.ShowOffset, v => { c.ShowOffset = v; Changed(); });
@@ -962,8 +1035,7 @@ class ClockForm : Form
         menu.Items.Add(new ToolStripSeparator());
 
         var style = new ToolStripMenuItem("Style");
-        style.DropDownItems.Add(Item("Dials", c.Style == 0, () => { c.Style = 0; Changed(); }));
-        style.DropDownItems.Add(Item("Compact", c.Style == 1, () => { c.Style = 1; Changed(); }));
+        for (int i = 0; i < StyleNames.Length; i++) { int v = i; style.DropDownItems.Add(Item(StyleNames[i], c.Style == v, () => { c.Style = v; Changed(); })); }
         style.DropDownItems.Add(new ToolStripSeparator());
         style.DropDownItems.Add(Item("24-hour time", c.Use24h, () => { c.Use24h = !c.Use24h; Changed(); }));
         style.DropDownItems.Add(Item("Show seconds", c.Seconds, () => { c.Seconds = !c.Seconds; Changed(); }));

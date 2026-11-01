@@ -44,17 +44,17 @@ Settings are kept in `HKCU\Software\KinetikClock`. The app makes no network conn
 
 ## Requirements
 
-Windows 10 or 11 (64-bit) with .NET Framework 4.8, which ships with both.
+Windows 10 or 11 (64-bit) with the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64).
 
 ## Building from source
 
-No SDK needed: `build.bat` compiles `KinetikClock.cs` with the .NET Framework compiler that ships with Windows. `build.bat package` also makes `KinetikClock.zip` for a release.
+Needs the .NET 8 SDK: `dotnet publish -c Release -p:PublishSingleFile=true -p:DebugType=none -o .` writes `KinetikClock.exe` in this folder.
 
 `KinetikClock.exe --demo` runs a separate copy with made-up places that reads and saves no settings, which is how the screenshots were made. Add `--theme Light` (or any theme name) to pick its theme.
 
 ## Tests and packaging
 
-`python tests/run-tests.py` runs the regression checks (no window opens). `build.bat package` builds the exe and makes the release zip, checking every file in it against its SHA-256 hash. The shared support code (`SuiteSupport.cs`) is compiled into the exe, so there's no extra DLL.
+`python tests/run-tests.py` runs the regression checks (no window opens). `powershell -File package.ps1 -App KinetikClock` (after the publish above) makes the release zip, checking every file in it against its SHA-256 hash. The shared support code (`SuiteSupport.cs`) is compiled into the exe, so there's no extra DLL.
 
 ## License
 

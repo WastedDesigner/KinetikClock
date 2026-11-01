@@ -6,3 +6,5 @@ dist/
 .github/
 *.zip.sha256
 release-manifest.json
+bin/
+obj/
