@@ -751,6 +751,8 @@ class ClockForm : Form
     [StructLayout(LayoutKind.Sequential)] struct WINDOWPOS { public IntPtr hwnd, hwndInsertAfter; public int x, y, cx, cy; public uint flags; }
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint f);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetProp(IntPtr h, string n);
+    bool HubHid { get { return GetProp(Handle, "KinetikHubHidden") != IntPtr.Zero; } } // set by Kinetik Hub's "Hide all widgets"
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
     [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr h, int i, int v);
 
@@ -1008,7 +1010,7 @@ class ClockForm : Form
         var shot = Program.Demo ? Environment.GetEnvironmentVariable("KINETIK_SHOT") : null; // demo only: save the rendered card for screenshots
         if (shot != null) try { bmp.Save(shot); } catch { }
         surface.Push(Handle, c.X, c.Y);
-        Widgets.Publish(Handle, margin); ShowWindow(Handle, Widgets.Hidden ? 0 : 8); // SW_SHOWNA
+        Widgets.Publish(Handle, margin); ShowWindow(Handle, Widgets.Hidden || HubHid ? 0 : 8); // SW_SHOWNA
         if (layer == 0) SetWindowPos(Handle, new IntPtr(1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10);       // bottom of the pile
         else if (layer == 2) SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10); // stay on top
     }
