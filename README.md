@@ -15,6 +15,12 @@ It's a small portable app with no installer and no account. It's a companion to 
 
 > **About this project:** I made this for my own desktop and decided to share it in case anyone else finds it useful. If you run into a bug or have an idea for a feature, please [open an issue](../../issues).
 
+## What's new in 2.2
+
+- **Alarms and timers:** right-click → *Alarms and timers…* opens a window with **Alarms** (repeat every day, weekdays, weekends or once; an alarm window with Snooze and a repeating sound), **Timer** (several at once), **Stopwatch** with laps, and a **Focus** (Pomodoro) timer with short and long breaks. Running timers count down in a line under the clocks. Timers, the stopwatch and the focus timer last only while the app runs; alarms are saved.
+- **Meeting planner:** pick two places and your working hours, and see the hours you are both at work.
+- **Next calendar event:** a line under the clocks shows the next event from Kinetik Calendar ("Design review in 25 min"). Switch it off in Settings → Clocks.
+
 ## What's new in 2.0
 
 Part of the Kinetik apps, with [Kinetik Stats](https://github.com/WastedDesigner/Kinetik) (the taskbar monitor, called just Kinetik until its v4.0), [Kinetik Hub](https://github.com/WastedDesigner/KinetikHub) and the other desktop widgets.

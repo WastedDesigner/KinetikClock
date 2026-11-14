@@ -8,9 +8,11 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -18,20 +20,20 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Clock")]
 [assembly: AssemblyProduct("Kinetik Clock")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("2.1.1.0")]
+[assembly: AssemblyVersion("2.2.0.0")]
 
 static class Program
 {
-    public const string Version = "2.1.1";
+    public const string Version = "2.2.0";
     // --demo: made-up places, nothing read from or saved to this PC. "--theme Name" picks its theme (for screenshots).
     public static bool Demo;
-    public static string DemoTheme; public static int DemoStyle; public static bool DemoFull;
+    public static string DemoTheme; public static int DemoStyle; public static bool DemoFull, DemoNext; // --next: a made-up next calendar event
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
     [STAThread]
     static void Main(string[] args)
     {
-        Demo = args.Contains("--demo"); DemoFull = args.Contains("--full"); // --full: seconds, offsets, scale and places like a real setup
+        Demo = args.Contains("--demo"); DemoFull = args.Contains("--full"); DemoNext = args.Contains("--next"); // --full: seconds, offsets, scale and places like a real setup
         int ti = Array.IndexOf(args, "--theme");
         if (ti >= 0 && ti + 1 < args.Length) DemoTheme = args[ti + 1];
         int si = Array.IndexOf(args, "--style");
@@ -74,9 +76,11 @@ class Settings
 {
     const string KeyPath = @"Software\KinetikClock";
     public int X = int.MinValue, Y = int.MinValue, Width = 300, Scale = 100, Opacity = CommonMenu.DefaultOpacity, Layer = 0, Style = 0; // Style: 0 dials, 1 text only, 2 daylight bar, 3 orbit ring, 4 big type, 5 galaxy
-    public bool Locked, Snap = true, Seconds, ShowOffset = true, ClickThrough;
+    public int FocusMin = 25, ShortMin = 5, LongMin = 15, WorkStart = 9, WorkEnd = 17; // the focus timer's lengths; the meeting planner's working hours
+    public bool Locked, Snap = true, Seconds, ShowOffset = true, ClickThrough, ShowNext = true;
     public bool Use24h = CultureInfo.CurrentCulture.DateTimeFormat.ShortTimePattern.Contains("H");
     public string ThemeName = "Midnight", FontName = ""; // "" = Segoe UI Variable Text
+    public string Alarms = "", MeetA = "", MeetB = ""; // Alarms: see Alarms.Parse; MeetA/B: the meeting planner's time zone ids ("" = this PC)
     public string Places = "Local=\nLondon=GMT Standard Time\nNew York=Eastern Standard Time\nTokyo=Tokyo Standard Time";
 
     public List<Place> List
@@ -174,6 +178,313 @@ class Settings
                 }
         }
         catch { }
+    }
+}
+
+// ======================================================================= Alarms, timers, stopwatch, focus, meeting planner, next event
+// The logic is here, apart from the windows, so it can be tested. Alarms are saved in Settings.Alarms; timers, the stopwatch and
+// the focus timer live only while the app runs.
+class Alarm
+{
+    public int Hour, Minute, Days = 127; // Days: one bit per weekday (bit 0 Sunday); 0 = once
+    public bool On = true;
+    public string Label = "";
+}
+
+static class Alarms
+{
+    public const int EveryDay = 127, Weekdays = 62, Weekends = 65;
+
+    // "07:30|1|Label|127" per line.
+    public static List<Alarm> Parse(string s)
+    {
+        var list = new List<Alarm>();
+        foreach (var line in (s ?? "").Split('\n'))
+        {
+            var p = line.Split('|'); int h, m, d;
+            if (p.Length < 4 || !int.TryParse(p[0].Split(':')[0], out h) || p[0].Split(':').Length != 2 || !int.TryParse(p[0].Split(':')[1], out m) || !int.TryParse(p[3], out d)) continue;
+            if (h < 0 || h > 23 || m < 0 || m > 59) continue;
+            list.Add(new Alarm { Hour = h, Minute = m, On = p[1] == "1", Label = p[2], Days = d & 127 });
+        }
+        return list;
+    }
+
+    public static string Join(IEnumerable<Alarm> alarms)
+    {
+        return string.Join("\n", alarms.Select(a => a.Hour.ToString("00") + ":" + a.Minute.ToString("00") + "|" + (a.On ? 1 : 0) + "|" + (a.Label ?? "").Replace("|", " ").Replace("\n", " ") + "|" + a.Days));
+    }
+
+    // "7:30", "07:30", "6:45pm", "6.45 PM", "7 am", "1930": null when it isn't a time.
+    public static TimeSpan? ParseTime(string text)
+    {
+        var m = Regex.Match((text ?? "").Trim().ToLowerInvariant(), @"^(\d{1,2})(?:[:.]?(\d{2}))?\s*(am|pm|a|p)?$");
+        if (!m.Success) return null;
+        int h = int.Parse(m.Groups[1].Value), min = m.Groups[2].Success ? int.Parse(m.Groups[2].Value) : 0;
+        if (m.Groups[3].Success)
+        {
+            if (h < 1 || h > 12) return null;
+            h = h % 12 + (m.Groups[3].Value[0] == 'p' ? 12 : 0);
+        }
+        else if (!m.Groups[2].Success && m.Groups[1].Value.Length > 2) return null;
+        return h > 23 || min > 59 ? (TimeSpan?)null : new TimeSpan(h, min, 0);
+    }
+
+    public static string DaysText(int days)
+    {
+        return days == 0 ? "Once" : days == EveryDay ? "Every day" : days == Weekdays ? "Weekdays" : days == Weekends ? "Weekends" : "Some days";
+    }
+
+    // Every day, then weekdays, then weekends, then once.
+    public static int NextRepeat(int days) { return days == EveryDay ? Weekdays : days == Weekdays ? Weekends : days == Weekends ? 0 : EveryDay; }
+
+    // The alarms that go off in this minute, each only once (`fired` remembers them for a day); a one-off alarm is switched off.
+    public static List<Alarm> Due(List<Alarm> alarms, DateTime now, HashSet<string> fired)
+    {
+        var due = new List<Alarm>();
+        if (fired.Count > 200) fired.Clear();
+        foreach (var a in alarms)
+        {
+            if (!a.On || a.Hour != now.Hour || a.Minute != now.Minute) continue;
+            if (a.Days != 0 && (a.Days >> (int)now.DayOfWeek & 1) == 0) continue;
+            if (!fired.Add(now.ToString("yyyyMMddHHmm") + "|" + a.Hour + ":" + a.Minute + a.Label)) continue;
+            due.Add(a);
+            if (a.Days == 0) a.On = false;
+        }
+        return due;
+    }
+}
+
+class RunningTimer { public string Name = ""; public DateTime End; }
+
+static class Dur
+{
+    // 04:32, or 1:04:32 from an hour up.
+    public static string Span(TimeSpan t)
+    {
+        if (t < TimeSpan.Zero) t = TimeSpan.Zero;
+        int s = (int)Math.Ceiling(t.TotalSeconds);
+        return s >= 3600 ? s / 3600 + ":" + (s / 60 % 60).ToString("00") + ":" + (s % 60).ToString("00") : (s / 60).ToString("00") + ":" + (s % 60).ToString("00");
+    }
+
+    // "90", "90s", "5m", "1h", "12:30" (minutes:seconds), "1h30m": null when it isn't a duration.
+    public static TimeSpan? ParseDuration(string text)
+    {
+        text = (text ?? "").Trim().ToLowerInvariant();
+        var colon = Regex.Match(text, @"^(\d{1,3}):(\d{2})$");
+        if (colon.Success) return new TimeSpan(0, int.Parse(colon.Groups[1].Value), int.Parse(colon.Groups[2].Value));
+        var parts = Regex.Match(text, @"^(?:(\d+)\s*h)?\s*(?:(\d+)\s*m(?:in)?)?\s*(?:(\d+)\s*s)?$");
+        if (parts.Success && text != "" && text.Any(char.IsLetter))
+            return new TimeSpan(parts.Groups[1].Success ? int.Parse(parts.Groups[1].Value) : 0, parts.Groups[2].Success ? int.Parse(parts.Groups[2].Value) : 0, parts.Groups[3].Success ? int.Parse(parts.Groups[3].Value) : 0);
+        int n;
+        return int.TryParse(text, out n) && n > 0 ? TimeSpan.FromMinutes(n) : (TimeSpan?)null; // a bare number is minutes
+    }
+}
+
+class Watch
+{
+    public bool Running; public DateTime Since; public TimeSpan Before;
+    public readonly List<TimeSpan> Laps = new List<TimeSpan>(); // elapsed time at each lap
+
+    public TimeSpan Elapsed(DateTime now) { return Before + (Running ? now - Since : TimeSpan.Zero); }
+    public void Start(DateTime now) { if (!Running) { Since = now; Running = true; } }
+    public void Stop(DateTime now) { if (Running) { Before += now - Since; Running = false; } }
+    public void Lap(DateTime now) { if (Running) Laps.Add(Elapsed(now)); }
+    public void Reset() { Running = false; Before = TimeSpan.Zero; Laps.Clear(); }
+    // How long lap i took.
+    public TimeSpan Split(int i) { return Laps[i] - (i == 0 ? TimeSpan.Zero : Laps[i - 1]); }
+
+    public static string Text(TimeSpan t)
+    {
+        return (t.TotalHours >= 1 ? (int)t.TotalHours + ":" + t.Minutes.ToString("00") : t.Minutes.ToString("00")) + ":" + t.Seconds.ToString("00") + "." + (t.Milliseconds / 10).ToString("00");
+    }
+}
+
+// Pomodoro: focus, a short break, focus, a short break... and a long break after every fourth focus.
+class Pomodoro
+{
+    public int Phase;        // 0 focus, 1 short break, 2 long break
+    public int Done;         // focus sessions finished in this round
+    public bool Running; public DateTime End; public TimeSpan Left;
+    public string Name { get { return Phase == 0 ? "Focus" : Phase == 1 ? "Break" : "Long break"; } }
+    public bool Active { get { return Running || Left > TimeSpan.Zero; } }
+
+    public static TimeSpan Length(int phase, int focus, int brk, int longBrk) { return TimeSpan.FromMinutes(phase == 0 ? focus : phase == 1 ? brk : longBrk); }
+    public TimeSpan Remaining(DateTime now) { return Running ? End - now : Left; }
+
+    public void Start(DateTime now, int focus, int brk, int longBrk)
+    {
+        if (Running) return;
+        if (Left <= TimeSpan.Zero) Left = Length(Phase, focus, brk, longBrk);
+        End = now + Left; Running = true;
+    }
+    public void Pause(DateTime now) { if (Running) { Left = End - now; Running = false; } }
+    public void Reset() { Phase = 0; Done = 0; Running = false; Left = TimeSpan.Zero; }
+
+    // Moves on to the next phase and starts it. Returns the phase that just ended.
+    public int Advance(DateTime now, int focus, int brk, int longBrk)
+    {
+        int ended = Phase;
+        if (Phase == 0) { Done++; Phase = Done % 4 == 0 ? 2 : 1; }
+        else Phase = 0;
+        Left = TimeSpan.Zero; Running = false;
+        Start(now, focus, brk, longBrk);
+        return ended;
+    }
+
+    // True once when the running phase has run out (and the next one has begun).
+    public bool Tick(DateTime now, int focus, int brk, int longBrk, out int ended)
+    {
+        ended = -1;
+        if (!Running || now < End) return false;
+        ended = Advance(now, focus, brk, longBrk);
+        return true;
+    }
+}
+
+// Two places' working hours, side by side.
+static class Meeting
+{
+    // The hours of the day in `a` (0-23, on `day`) that are inside working hours in both places.
+    public static List<int> Overlap(TimeZoneInfo a, TimeZoneInfo b, DateTime day, int from, int to)
+    {
+        var hours = new List<int>();
+        for (int h = 0; h < 24; h++)
+        {
+            var inA = DateTime.SpecifyKind(day.Date.AddHours(h), DateTimeKind.Unspecified);
+            if (a.IsInvalidTime(inA)) continue;
+            var inB = TimeZoneInfo.ConvertTime(inA, a, b);
+            if (h >= from && h < to && inB.Hour >= from && inB.Hour < to) hours.Add(h);
+        }
+        return hours;
+    }
+
+    // "9:00 to 11:00": the runs of hours, as clock times in the place they're counted in.
+    public static List<string> Ranges(List<int> hours, bool use24h)
+    {
+        var res = new List<string>();
+        for (int i = 0; i < hours.Count; )
+        {
+            int j = i; while (j + 1 < hours.Count && hours[j + 1] == hours[j] + 1) j++;
+            Func<int, string> t = h => use24h ? h + ":00" : (h % 12 == 0 ? 12 : h % 12) + (h % 24 < 12 ? "am" : "pm");
+            res.Add(t(hours[i]) + " to " + t(hours[j] + 1));
+            i = j + 1;
+        }
+        return res;
+    }
+}
+
+// The next calendar event, as Kinetik Calendar saves it: %LOCALAPPDATA%\KinetikCalendar\nextevent.tsv, one line of
+// UTC start ticks, UTC end ticks, title, location and calendar, tab-separated (empty when nothing is coming up).
+static class NextUp
+{
+    public class Item { public DateTime Start, End; public string Title, Location; }
+    static DateTime stamp, looked; static Item cached;
+
+    public static Item Parse(string line)
+    {
+        var p = (line ?? "").Split('\t'); long s, e;
+        if (p.Length < 3 || !long.TryParse(p[0], out s) || !long.TryParse(p[1], out e) || s <= 0 || s > DateTime.MaxValue.Ticks || e > DateTime.MaxValue.Ticks) return null;
+        return new Item { Start = new DateTime(s, DateTimeKind.Utc).ToLocalTime(), End = new DateTime(Math.Max(s, e), DateTimeKind.Utc).ToLocalTime(), Title = p[2], Location = p.Length > 3 && p[3] != "" ? p[3] : null };
+    }
+
+    public static Item Read()
+    {
+        if (Program.Demo) return Program.DemoNext ? new Item { Start = DateTime.Now.AddMinutes(25), End = DateTime.Now.AddMinutes(85), Title = "Design review" } : null;
+        if ((DateTime.UtcNow - looked).TotalSeconds < 15) return cached; // the file is looked at every 15 seconds
+        looked = DateTime.UtcNow;
+        try
+        {
+            var file = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KinetikCalendar", "nextevent.tsv");
+            var info = new FileInfo(file);
+            if (!info.Exists) return cached = null;
+            if (info.LastWriteTimeUtc != stamp) { stamp = info.LastWriteTimeUtc; cached = Parse(File.ReadAllText(file).Split('\n')[0].Trim()); }
+        }
+        catch { cached = null; }
+        return cached;
+    }
+
+    // "Design review in 25 min", "Design review at 3:00pm", "Design review Tue 9:00am". Null once it has started.
+    public static string Text(Item e, DateTime now, bool use24h)
+    {
+        if (e == null || e.Start <= now) return null;
+        var d = e.Start - now;
+        string when = d.TotalMinutes < 1 ? "now" : d.TotalMinutes < 60 ? "in " + (int)Math.Ceiling(d.TotalMinutes) + " min"
+            : e.Start.Date == now.Date ? "at " + Clk(e.Start, use24h) : (e.Start.Date == now.Date.AddDays(1) ? "tomorrow " : e.Start.ToString("ddd ")) + Clk(e.Start, use24h);
+        return e.Title + " " + when;
+    }
+
+    static string Clk(DateTime t, bool use24h) { return use24h ? t.ToString("H:mm") : t.ToString(t.Minute == 0 ? "h tt" : "h:mm tt", CultureInfo.InvariantCulture).ToLowerInvariant().Replace(" ", ""); }
+}
+
+// A bar of the day in two places, with working hours shaded and the hours both share lit up.
+class MeetingStrip : Control
+{
+    public TimeZoneInfo A, B; public string NameA = "", NameB = ""; public int From = 9, To = 17; public DateTime Day = DateTime.Today;
+
+    public MeetingStrip() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var look = KinetikSuite.Look.Current; var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias; g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+        g.Clear(look.Card);
+        if (A == null || B == null) return;
+        float k = DeviceDpi / 96f, left = 74 * k, cw = (Width - left - 10 * k) / 24f, rh = 26 * k, top = 8 * k;
+        var overlap = Meeting.Overlap(A, B, Day, From, To);
+        using (var f = new Font("Segoe UI", 8f))
+        using (var ink = new SolidBrush(look.Text)) using (var soft = new SolidBrush(look.Sub))
+        {
+            for (int row = 0; row < 2; row++)
+            {
+                var tz = row == 0 ? A : B; float y = top + row * (rh + 6 * k);
+                g.DrawString(row == 0 ? NameA : NameB, f, ink, new RectangleF(10 * k, y, left - 14 * k, rh), new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap });
+                for (int h = 0; h < 24; h++)
+                {
+                    var inA = DateTime.SpecifyKind(Day.Date.AddHours(h), DateTimeKind.Unspecified);
+                    int local = row == 0 ? h : (A.IsInvalidTime(inA) ? h : TimeZoneInfo.ConvertTime(inA, A, B).Hour);
+                    bool work = local >= From && local < To, both = overlap.Contains(h);
+                    var cell = new RectangleF(left + h * cw + 0.5f * k, y, cw - 1 * k, rh);
+                    using (var b = new SolidBrush(both ? Color.FromArgb(230, look.Accent) : work ? Color.FromArgb(70, look.Accent) : Color.FromArgb(40, look.Sub))) g.FillRectangle(b, cell);
+                    if (h % 3 == 0 || row == 1)
+                        g.DrawString(local.ToString(), f, both ? ink : soft, cell, new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center });
+                }
+            }
+        }
+    }
+}
+
+// The window an alarm opens: the time and label, a sound that repeats until you answer, Snooze (5 minutes) and Dismiss.
+class AlarmForm : Form
+{
+    readonly System.Windows.Forms.Timer beep = new System.Windows.Forms.Timer { Interval = 2500 };
+
+    public AlarmForm(string time, string label, Action snooze)
+    {
+        var look = KinetikSuite.Look.Current;
+        float k = DeviceDpi / 96f;
+        Text = "Alarm";
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        AutoScaleMode = AutoScaleMode.None;
+        FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
+        StartPosition = FormStartPosition.CenterScreen; TopMost = true;
+        BackColor = look.Bg; ForeColor = look.Text; Font = new Font("Segoe UI", 10f);
+        ClientSize = new Size((int)(340 * k), (int)(190 * k));
+        var big = new Label { Text = time, Font = new Font("Segoe UI", 30f, FontStyle.Bold), AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Dock = DockStyle.Top, Height = (int)(78 * k), ForeColor = look.Text };
+        var text = new Label { Text = label == "" ? "Alarm" : label, AutoSize = false, TextAlign = ContentAlignment.TopCenter, Dock = DockStyle.Top, Height = (int)(40 * k), ForeColor = look.Sub };
+        var bar = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, BackColor = look.Bg, Padding = new Padding((int)(16 * k), (int)(6 * k), (int)(16 * k), (int)(16 * k)) };
+        var dismiss = new KinetikSuite.FlatButton("Dismiss", true, k) { Font = Font }; dismiss.Click += (s, e) => Close();
+        var snz = new KinetikSuite.FlatButton("Snooze 5 min", false, k) { Font = Font }; snz.Click += (s, e) => { snooze(); Close(); };
+        bar.Controls.Add(dismiss); bar.Controls.Add(snz);
+        Controls.Add(text); Controls.Add(big); Controls.Add(bar);
+        beep.Tick += (s, e) => System.Media.SystemSounds.Exclamation.Play();
+        Shown += (s, e) => { Activate(); System.Media.SystemSounds.Exclamation.Play(); beep.Start(); };
+        FormClosed += (s, e) => beep.Dispose();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        KinetikSuite.Look.Current.Window(Handle); // title bar in the Kinetik apps' theme
     }
 }
 
@@ -455,6 +766,14 @@ class ClockForm : Form
     Point grab, downAt;
     string lastKey;
     ThemePicker picker;
+    readonly List<RunningTimer> timers = new List<RunningTimer>();
+    readonly Pomodoro focus = new Pomodoro();
+    readonly Watch watch = new Watch();
+    readonly HashSet<string> firedAlarms = new HashSet<string>();
+    readonly List<Action> live = new List<Action>(); // the labels in the open tools window that count along
+    readonly System.Windows.Forms.Timer liveTimer = new System.Windows.Forms.Timer { Interval = 100 };
+    KinetikSuite.SettingsWindow tools;
+    string footer = ""; // the line under the places: running timers and the next calendar event
 
     public ClockForm()
     {
@@ -470,7 +789,8 @@ class ClockForm : Form
         Backup.BeforeExit = () => tray.Visible = false;
         tray.ContextMenuStrip = menu;
         tray.Visible = true;
-        tick.Tick += (s, e) => { Tick(); Render(false); };
+        tick.Tick += (s, e) => { Tick(); CheckTools(); Render(false); };
+        liveTimer.Tick += (s, e) => { foreach (var u in live.ToList()) try { u(); } catch { } };
         SystemEvents.TimeChanged += OnTimeChanged;
         SystemEvents.SessionSwitch += OnSession;
     }
@@ -535,7 +855,7 @@ class ClockForm : Form
     {
         surface.Dispose();
         if (disposing) { SystemEvents.SessionSwitch -= OnSession; SystemEvents.TimeChanged -= OnTimeChanged; }
-        if (disposing) { tick.Dispose(); tray.Dispose(); menu.Dispose(); DisposeFonts(); shadow.Dispose(); if (textLayer != null) textLayer.Dispose(); }
+        if (disposing) { tick.Dispose(); liveTimer.Dispose(); tray.Dispose(); menu.Dispose(); DisposeFonts(); shadow.Dispose(); if (textLayer != null) textLayer.Dispose(); }
         base.Dispose(disposing);
     }
 
@@ -543,7 +863,7 @@ class ClockForm : Form
     void Tick()
     {
         var now = DateTime.Now;
-        int ms = c.Seconds ? 1000 - now.Millisecond : (60 - now.Second) * 1000 - now.Millisecond;
+        int ms = Fast ? 1000 - now.Millisecond : (60 - now.Second) * 1000 - now.Millisecond;
         tick.Interval = Math.Max(50, ms + 20);
         tick.Start();
     }
@@ -665,8 +985,9 @@ class ClockForm : Form
         var places = c.List;
         var nowUtc = DateTime.UtcNow;
         if (!Program.Demo && places.Count > 0) Widgets.Status(TimeZoneInfo.ConvertTimeFromUtc(nowUtc, places[0].Tz).ToString(c.Use24h ? "HH:mm" : "h:mm tt") + " " + places[0].Name);
-        string key = c.Places + "|" + c.Style + c.ThemeName + c.Use24h + c.Seconds + c.ShowOffset + c.Width + c.Scale + c.Opacity
-            + "|" + nowUtc.ToString(c.Seconds ? "HHmmss" : "HHmm") + Theme.Get(c.ThemeName).Name;
+        footer = FooterText(nowUtc);
+        string key = c.Places + "|" + footer + "|" + c.Style + c.ThemeName + c.Use24h + c.Seconds + c.ShowOffset + c.Width + c.Scale + c.Opacity
+            + "|" + nowUtc.ToString(Fast ? "HHmmss" : "HHmm") + Theme.Get(c.ThemeName).Name;
         if (key == lastKey && !force) return;
         lastKey = key;
 
@@ -674,7 +995,7 @@ class ClockForm : Form
         u = DeviceDpi / 96f * c.Scale / 100f;
         margin = (int)(14 * u);
         float pad = 14 * u;
-        int cardW = (int)(c.Width * u), cardH = (int)(pad * 2 + Math.Max(1, places.Count) * RowH);
+        int cardW = (int)(c.Width * u), cardH = (int)(pad * 2 + Math.Max(1, places.Count) * RowH + (footer != "" ? 26 * u : 0));
         winW = cardW + margin * 2; winH = cardH + margin * 2;
 
         bool wantThrough = c.Locked && c.ClickThrough;
@@ -884,6 +1205,11 @@ class ClockForm : Form
                     }
                 }
             }
+            if (footer != "")
+            {
+                using (var pen = new Pen(th.Line, 1)) g.DrawLine(pen, card.X + pad, y, card.Right - pad, y);
+                g.DrawString(footer, subF, sub, new RectangleF(card.X + pad, y, card.Width - pad * 2, 26 * u), fmtL);
+            }
         }
     }
 
@@ -944,6 +1270,216 @@ class ClockForm : Form
         return it;
     }
 
+    // ---- alarms, timers, stopwatch, focus, meeting planner
+    string FooterText(DateTime nowUtc)
+    {
+        var parts = new List<string>();
+        var now = DateTime.Now;
+        if (focus.Active) parts.Add(focus.Name + " " + Dur.Span(focus.Remaining(now)) + (focus.Running ? "" : " (paused)"));
+        var next = timers.OrderBy(t => t.End).FirstOrDefault();
+        if (next != null) parts.Add("Timer " + Dur.Span(next.End - now) + (timers.Count > 1 ? " +" + (timers.Count - 1) : ""));
+        if (watch.Running) parts.Add("Stopwatch " + Dur.Span(watch.Elapsed(now)));
+        if (c.ShowNext) { var n = NextUp.Text(NextUp.Read(), now, c.Use24h); if (n != null) parts.Add("Next: " + n); }
+        return string.Join("  ·  ", parts);
+    }
+
+    bool Fast { get { return c.Seconds || timers.Count > 0 || focus.Running || watch.Running; } }
+
+    void Notify(string title, string text)
+    {
+        try { tray.ShowBalloonTip(8000, title, text, ToolTipIcon.None); } catch { }
+        System.Media.SystemSounds.Asterisk.Play();
+    }
+
+    // Alarms due this minute, timers that have run out and focus phases that have ended.
+    void CheckTools()
+    {
+        if (Program.Demo) return;
+        var now = DateTime.Now;
+        var list = Alarms.Parse(c.Alarms);
+        var due = Alarms.Due(list, now, firedAlarms);
+        if (due.Count > 0) { c.Alarms = Alarms.Join(list); c.Save(); foreach (var a in due) RingAlarm(a); RefreshTools("Alarms"); }
+        foreach (var t in timers.Where(t => t.End <= now).ToList())
+        {
+            timers.Remove(t);
+            Notify("Timer finished", t.Name != "" ? t.Name : "Your timer is done.");
+            RefreshTools("Timer");
+        }
+        int ended;
+        if (focus.Tick(now, c.FocusMin, c.ShortMin, c.LongMin, out ended))
+        {
+            Notify(ended == 0 ? "Focus session done" : "Break over", ended == 0 ? (focus.Phase == 2 ? "Time for a long break: " + c.LongMin + " minutes." : "Time for a break: " + c.ShortMin + " minutes.") : "Back to focus: " + c.FocusMin + " minutes.");
+            RefreshTools("Focus");
+        }
+    }
+
+    void RingAlarm(Alarm a)
+    {
+        string time = DateTime.Today.AddHours(a.Hour).AddMinutes(a.Minute).ToString(c.Use24h ? "HH:mm" : "h:mm tt", CultureInfo.InvariantCulture);
+        var f = new AlarmForm(time, a.Label, () =>
+        {
+            var soon = DateTime.Now.AddMinutes(5); // snooze: a one-off alarm five minutes on
+            var l = Alarms.Parse(c.Alarms);
+            l.Add(new Alarm { Hour = soon.Hour, Minute = soon.Minute, Days = 0, Label = a.Label == "" ? "Snoozed" : a.Label });
+            c.Alarms = Alarms.Join(l); c.Save(); RefreshTools("Alarms");
+        });
+        f.Show();
+    }
+
+    string toolsPage;
+    void RefreshTools(string page) { if (tools != null && !tools.IsDisposed && toolsPage == page) tools.ShowPage(page); }
+    void Started() { Tick(); Render(true); }
+
+    // Alarms and timers…: its own window, in the same layout as Settings.
+    public void ShowTools(string page = null)
+    {
+        if (tools != null && !tools.IsDisposed) { tools.Activate(); if (page != null) tools.ShowPage(page); return; }
+        var pages = new List<KinetikSuite.SettingsWindow.Page>
+        {
+            new KinetikSuite.SettingsWindow.Page { Name = "Alarms", Glyph = "clock", Sub = "Ring at a time you set, on the days you choose.", Build = BuildAlarms },
+            new KinetikSuite.SettingsWindow.Page { Name = "Timer", Glyph = "timer", Sub = "Count down from any length of time.", Build = BuildTimer },
+            new KinetikSuite.SettingsWindow.Page { Name = "Stopwatch", Glyph = "timer", Sub = "Time something, with laps.", Build = BuildStopwatch },
+            new KinetikSuite.SettingsWindow.Page { Name = "Focus", Glyph = "clock", Sub = "Work in sessions with breaks between (Pomodoro).", Build = BuildFocus },
+            new KinetikSuite.SettingsWindow.Page { Name = "Meeting", Glyph = "places", Sub = "When two places are both at work.", Build = BuildMeeting },
+        };
+        tools = new KinetikSuite.SettingsWindow("Kinetik Clock", Program.Version, pages, page);
+        tools.Text = "Kinetik Clock: alarms and timers";
+        liveTimer.Start();
+        tools.FormClosed += (s, e) => { liveTimer.Stop(); live.Clear(); tools = null; toolsPage = null; };
+        tools.Show();
+    }
+
+    Label LiveLabel(KinetikSuite.SettingsWindow.Builder b, float pt, Func<string> text)
+    {
+        var l = new Label { Font = new Font("Segoe UI", pt, FontStyle.Bold), ForeColor = KinetikSuite.Look.Current.Text, BackColor = KinetikSuite.Look.Current.Card, AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Size = new Size((int)(150 * b.K), (int)(32 * b.K)), Text = text() };
+        live.Add(() => { var t = text(); if (l.Text != t) l.Text = t; });
+        return l;
+    }
+
+    void BuildAlarms(KinetikSuite.SettingsWindow.Builder b)
+    {
+        toolsPage = "Alarms"; live.Clear();
+        b.Section("Alarms");
+        var list = Alarms.Parse(c.Alarms);
+        if (list.Count == 0) b.Hint("No alarms yet.", 1);
+        for (int i = 0; i < list.Count; i++)
+        {
+            int idx = i; var a = list[i];
+            Action<Action<List<Alarm>>> edit = f => { var l = Alarms.Parse(c.Alarms); if (idx < l.Count) f(l); c.Alarms = Alarms.Join(l); c.Save(); b.Refresh(); };
+            string time = DateTime.Today.AddHours(a.Hour).AddMinutes(a.Minute).ToString(c.Use24h ? "HH:mm" : "h:mm tt", CultureInfo.InvariantCulture);
+            b.Buttons(time + (a.Label != "" ? "  ·  " + a.Label : ""), Alarms.DaysText(a.Days) + (a.On ? "" : "  ·  off"),
+                b.Button(a.On ? "On" : "Off", () => edit(l => l[idx].On = !l[idx].On), a.On),
+                b.Button("Repeat", () => edit(l => l[idx].Days = Alarms.NextRepeat(l[idx].Days))),
+                b.Button("Remove", () => edit(l => l.RemoveAt(idx))));
+        }
+        b.Buttons("New alarm", "A time such as 7:30 or 6:45pm", b.Button("Add…", () =>
+        {
+            var t = Prompt("New alarm", "Time (for example 7:30 or 6:45pm):", "7:00");
+            if (t == null) return;
+            var span = Alarms.ParseTime(t);
+            if (span == null) { MessageBox.Show("That isn't a time. Try 7:30 or 6:45pm.", "Kinetik Clock"); return; }
+            var label = Prompt("New alarm", "Label (optional):", "") ?? "";
+            var l = Alarms.Parse(c.Alarms);
+            l.Add(new Alarm { Hour = span.Value.Hours, Minute = span.Value.Minutes, Label = label.Trim() });
+            c.Alarms = Alarms.Join(l.OrderBy(x => x.Hour * 60 + x.Minute)); c.Save(); b.Refresh();
+        }, true));
+        b.Hint("An alarm opens a window you can snooze for five minutes or dismiss, and plays a sound until you do. Alarms ring while Kinetik Clock is running.", 2);
+    }
+
+    void BuildTimer(KinetikSuite.SettingsWindow.Builder b)
+    {
+        toolsPage = "Timer"; live.Clear();
+        Action<TimeSpan> start = len => { timers.Add(new RunningTimer { End = DateTime.Now + len, Name = Dur.Span(len) + " timer" }); Started(); b.Refresh(); };
+        b.Section("Start a timer");
+        b.Buttons("Minutes", "Tap one to start", new[] { 1, 5, 10, 15, 30, 60 }.Select(m => { int mm = m; return b.Small(m.ToString(), () => start(TimeSpan.FromMinutes(mm))); }).ToArray());
+        b.Buttons("Another length", "90s, 12m, 1h30m or 12:30", b.Button("Start…", () =>
+        {
+            var t = Prompt("Timer", "How long? (for example 90s, 12m, 1h30m or 12:30)", "10m");
+            if (t == null) return;
+            var len = Dur.ParseDuration(t);
+            if (len == null || len.Value.TotalSeconds < 1 || len.Value.TotalHours > 24) { MessageBox.Show("That isn't a length of time. Try 90s, 12m or 1h30m.", "Kinetik Clock"); return; }
+            start(len.Value);
+        }, true));
+        b.Section("Running");
+        if (timers.Count == 0) b.Hint("Nothing running. Timers count down on the clock, too.", 1);
+        foreach (var t in timers.OrderBy(x => x.End).ToList())
+        {
+            var tt = t;
+            var flow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = KinetikSuite.Look.Current.Card, Margin = Padding.Empty };
+            flow.Controls.Add(LiveLabel(b, 13f, () => Dur.Span(tt.End - DateTime.Now)));
+            var cancel = b.Small("✕", () => { timers.Remove(tt); Started(); b.Refresh(); });
+            cancel.Margin = new Padding((int)(6 * b.K), 0, 0, 0);
+            flow.Controls.Add(cancel);
+            flow.Size = flow.PreferredSize;
+            b.Row(tt.Name, "Ends " + tt.End.ToString(c.Use24h ? "HH:mm:ss" : "h:mm:ss tt", CultureInfo.InvariantCulture), flow);
+        }
+    }
+
+    void BuildStopwatch(KinetikSuite.SettingsWindow.Builder b)
+    {
+        toolsPage = "Stopwatch"; live.Clear();
+        b.Section("Stopwatch");
+        b.Row("Elapsed", null, LiveLabel(b, 18f, () => Watch.Text(watch.Elapsed(DateTime.Now))));
+        b.Buttons("Controls", null,
+            b.Button(watch.Running ? "Stop" : "Start", () => { if (watch.Running) watch.Stop(DateTime.Now); else watch.Start(DateTime.Now); Started(); b.Refresh(); }, true),
+            b.Button("Lap", () => { watch.Lap(DateTime.Now); b.Refresh(); }),
+            b.Button("Reset", () => { watch.Reset(); Started(); b.Refresh(); }));
+        if (watch.Laps.Count > 0) b.Section("Laps");
+        for (int i = watch.Laps.Count - 1; i >= 0; i--)
+        {
+            var total = new Label { Text = Watch.Text(watch.Laps[i]), Font = new Font("Segoe UI", 11f, FontStyle.Bold), ForeColor = KinetikSuite.Look.Current.Text, BackColor = KinetikSuite.Look.Current.Card, AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Size = new Size((int)(150 * b.K), (int)(32 * b.K)) };
+            b.Row("Lap " + (i + 1), "+" + Watch.Text(watch.Split(i)), total);
+        }
+    }
+
+    void BuildFocus(KinetikSuite.SettingsWindow.Builder b)
+    {
+        toolsPage = "Focus"; live.Clear();
+        b.Section("Focus timer");
+        b.Row(focus.Name, "Session " + (focus.Phase == 0 ? focus.Done % 4 + 1 : Math.Max(1, focus.Done % 4 == 0 ? 4 : focus.Done % 4)) + " of 4", LiveLabel(b, 18f, () => focus.Active ? Dur.Span(focus.Remaining(DateTime.Now)) : Dur.Span(Pomodoro.Length(focus.Phase, c.FocusMin, c.ShortMin, c.LongMin))));
+        b.Buttons("Controls", focus.Running ? "Running. It carries on to the next phase by itself." : null,
+            b.Button(focus.Running ? "Pause" : focus.Active ? "Resume" : "Start", () =>
+            {
+                if (focus.Running) focus.Pause(DateTime.Now); else focus.Start(DateTime.Now, c.FocusMin, c.ShortMin, c.LongMin);
+                Started(); b.Refresh();
+            }, true),
+            b.Button("Skip", () => { focus.Advance(DateTime.Now, c.FocusMin, c.ShortMin, c.LongMin); Started(); b.Refresh(); }),
+            b.Button("Reset", () => { focus.Reset(); Started(); b.Refresh(); }));
+        b.Section("Lengths");
+        var focusMins = new[] { 15, 20, 25, 30, 45, 50 }; var shortMins = new[] { 3, 5, 10 }; var longMins = new[] { 10, 15, 20, 30 };
+        b.Choice("Focus", null, focusMins.Select(m => m + " minutes").ToArray(), Math.Max(0, Array.IndexOf(focusMins, c.FocusMin)), i => { c.FocusMin = focusMins[i]; c.Save(); }, 140);
+        b.Choice("Short break", null, shortMins.Select(m => m + " minutes").ToArray(), Math.Max(0, Array.IndexOf(shortMins, c.ShortMin)), i => { c.ShortMin = shortMins[i]; c.Save(); }, 140);
+        b.Choice("Long break", "After every fourth focus session", longMins.Select(m => m + " minutes").ToArray(), Math.Max(0, Array.IndexOf(longMins, c.LongMin)), i => { c.LongMin = longMins[i]; c.Save(); }, 140);
+        b.Hint("Changes apply from the next phase.", 1);
+    }
+
+    void BuildMeeting(KinetikSuite.SettingsWindow.Builder b)
+    {
+        toolsPage = "Meeting"; live.Clear();
+        var zones = TimeZoneInfo.GetSystemTimeZones().ToList();
+        var ids = new[] { "" }.Concat(zones.Select(z => z.Id)).ToList();
+        var names = new[] { "This PC" }.Concat(zones.Select(z => z.DisplayName)).ToArray();
+        string idA = c.MeetA, idB = c.MeetB;
+        if (idA == "" && idB == "") idB = c.List.Select(p => p.Zone).FirstOrDefault(z => z != "") ?? "";
+        Func<string, TimeZoneInfo> tz = id => { try { return id == "" ? TimeZoneInfo.Local : TimeZoneInfo.FindSystemTimeZoneById(id); } catch { return TimeZoneInfo.Local; } };
+        Func<string, string> nameOf = id => id == "" ? "You" : (c.List.FirstOrDefault(p => p.Zone == id) ?? new Place { Name = tz(id).Id }).Name;
+        b.Section("Places");
+        b.Choice("You", "Where you are", names, Math.Max(0, ids.IndexOf(idA)), i => { c.MeetA = ids[i]; c.Save(); b.Refresh(); }, 320);
+        b.Choice("Them", "Where they are", names, Math.Max(0, ids.IndexOf(idB)), i => { c.MeetB = ids[i]; c.Save(); b.Refresh(); }, 320);
+        var starts = new[] { 6, 7, 8, 9, 10 }; var ends = new[] { 15, 16, 17, 18, 19, 20 };
+        Func<int, string> hr = h => c.Use24h ? h + ":00" : (h % 12 == 0 ? 12 : h % 12) + (h < 12 ? "am" : "pm");
+        b.Choice("Work starts", null, starts.Select(hr).ToArray(), Math.Max(0, Array.IndexOf(starts, c.WorkStart)), i => { c.WorkStart = starts[i]; c.Save(); b.Refresh(); }, 140);
+        b.Choice("Work ends", null, ends.Select(hr).ToArray(), Math.Max(0, Array.IndexOf(ends, c.WorkEnd)), i => { c.WorkEnd = ends[i]; c.Save(); b.Refresh(); }, 140);
+        b.Section("Today");
+        TimeZoneInfo za = tz(idA), zb = tz(idB);
+        var day = TimeZoneInfo.ConvertTime(DateTime.UtcNow, za).Date;
+        b.Add(new MeetingStrip { A = za, B = zb, NameA = nameOf(idA), NameB = nameOf(idB), From = c.WorkStart, To = c.WorkEnd, Day = day, Size = new Size(b.Width, (int)(76 * b.K)), Margin = new Padding((int)(4 * b.K), 0, 0, (int)(8 * b.K)) });
+        var overlap = Meeting.Overlap(za, zb, day, c.WorkStart, c.WorkEnd);
+        var theirs = overlap.Select(h => TimeZoneInfo.ConvertTime(DateTime.SpecifyKind(day.AddHours(h), DateTimeKind.Unspecified), za, zb).Hour).OrderBy(h => h).ToList();
+        b.Hint(overlap.Count == 0 ? "No shared working hours with these settings. Wider working hours may help."
+            : "Both at work: " + string.Join(", ", Meeting.Ranges(overlap, c.Use24h)) + " for you, which is " + string.Join(", ", Meeting.Ranges(theirs, c.Use24h)) + " for them.", 3);
+    }
+
     void Changed() { c.Save(); Tick(); Render(true); }
 
     KinetikSuite.SettingsWindow settings;
@@ -977,7 +1513,8 @@ class ClockForm : Form
                 b.Switch("24-hour time", null, c.Use24h, v => { c.Use24h = v; Changed(); });
                 b.Switch("Show seconds", null, c.Seconds, v => { c.Seconds = v; Changed(); });
                 b.Switch("Show time difference", "How far ahead or behind each place is", c.ShowOffset, v => { c.ShowOffset = v; Changed(); });
-                b.Buttons("Windows date and time", "Your own time zone and clock sync", b.Button("Open", () => { try { System.Diagnostics.Process.Start("ms-settings:dateandtime"); } catch { } }));
+                b.Switch("Next calendar event", "A line under the clocks, from Kinetik Calendar", c.ShowNext, v => { c.ShowNext = v; Changed(); });
+                b.Buttons("Windows date and time", "Your own time zone and clock sync", b.Button("Open", () => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:dateandtime") { UseShellExecute = true }); } catch { } }));
             } },
         };
         pages.AddRange(Common().ForSettings().Pages());
@@ -1018,6 +1555,7 @@ class ClockForm : Form
         menu.Items.Clear();
         foreach (var it in old) it.Dispose(); // a cleared submenu that was shown keeps its window otherwise
         menu.Items.Add(Item("Add a place…", false, AddPlace));
+        menu.Items.Add(Item("Alarms and timers…", false, () => ShowTools(null)));
 
         var places = c.List;
         if (places.Count > 0)
@@ -1051,7 +1589,7 @@ class ClockForm : Form
         style.DropDownItems.Add(Item("Show time difference", c.ShowOffset, () => { c.ShowOffset = !c.ShowOffset; Changed(); }));
         menu.Items.Add(style);
 
-        menu.Items.Add(Item("Windows date and time settings", false, () => { try { System.Diagnostics.Process.Start("ms-settings:dateandtime"); } catch { } }));
+        menu.Items.Add(Item("Windows date and time settings", false, () => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:dateandtime") { UseShellExecute = true }); } catch { } }));
         menu.Items.Add(new ToolStripSeparator());
         Common().AddAll(menu.Items);
     }

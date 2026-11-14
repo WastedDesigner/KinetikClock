@@ -249,7 +249,7 @@ namespace KinetikSuite
     {
         static readonly Dictionary<string, int[]> Ranges = new Dictionary<string, int[]> {
             { "Width", new[] { 120, 2000 } }, { "Scale", new[] { 30, 400 } }, { "Opacity", new[] { 0, 100 } },
-            { "Layer", new[] { 0, 2 } }, { "Style", new[] { 0, 2 } }, { "IconSize", new[] { 0, 2 } },
+            { "Layer", new[] { 0, 2 } }, { "Style", new[] { 0, 5 } }, { "IconSize", new[] { 0, 2 } },
             { "Hours", new[] { 1, 24 } }, { "Days", new[] { 1, 31 } }, { "Refresh", new[] { 1, 1440 } },
             { "Wind", new[] { 0, 2 } }, { "FocusMin", new[] { 1, 240 } }, { "ShortMin", new[] { 1, 120 } },
             { "LongMin", new[] { 1, 240 } }, { "LongEvery", new[] { 1, 20 } }, { "Phase", new[] { 0, 2 } },
@@ -463,6 +463,7 @@ namespace KinetikSuite
         public System.Drawing.Color Bg, Nav, Card, Hover, Field, Border, Text, Sub, Accent, OnAccent, Warn, Good;
 
         public const string Key = @"Software\Kinetik Suite";
+        static readonly string AppKey = Key + @"\Apps\" + System.Diagnostics.Process.GetCurrentProcess().ProcessName;
         public const string Auto = "Match Windows", WindowsAccent = "Windows accent";
         public static readonly string[] Themes = { Auto, "Graphite", "OLED black", "Midnight", "Nord", "Mocha", "Forest", "Light", "Paper" };
         public static readonly string[] Accents = { "Sky", "Violet", "Mint", "Amber", "Rose", "Coral", WindowsAccent };
@@ -513,15 +514,17 @@ namespace KinetikSuite
 
         static string Value(string name, string fallback)
         {
-            try { using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(Key)) return k == null ? fallback : k.GetValue(name, fallback) as string ?? fallback; }
-            catch { return fallback; }
+            // Per-app value first; the old shared key only seeds an app that hasn't picked its own yet.
+            try { foreach (var path in new[] { AppKey, Key }) using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(path)) if (k != null && k.GetValue(name) is string s) return s; }
+            catch { }
+            return fallback;
         }
 
         public static void Save(string theme, string accent)
         {
             try
             {
-                using (var k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(Key))
+                using (var k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(AppKey))
                 {
                     if (theme != null) k.SetValue("Theme", theme);
                     if (accent != null) k.SetValue("Accent", accent);
