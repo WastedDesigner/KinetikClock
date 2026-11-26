@@ -50,11 +50,11 @@ Settings are kept in `HKCU\Software\KinetikClock`. The app makes no network conn
 
 ## Requirements
 
-Windows 10 or 11 (64-bit) with the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64).
+Windows 10 or 11 (64-bit) with the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (x64).
 
 ## Building from source
 
-Needs the .NET 8 SDK: `dotnet publish -c Release -p:PublishSingleFile=true -p:DebugType=none -o .` writes `KinetikClock.exe` in this folder.
+Needs the .NET 10 SDK: `dotnet publish -c Release -p:PublishSingleFile=true -p:DebugType=none -o .` writes `KinetikClock.exe` in this folder.
 
 `KinetikClock.exe --demo` runs a separate copy with made-up places that reads and saves no settings, which is how the screenshots were made. Add `--theme Light` (or any theme name) to pick its theme.
 

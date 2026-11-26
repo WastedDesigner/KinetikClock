@@ -20,11 +20,11 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Clock")]
 [assembly: AssemblyProduct("Kinetik Clock")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("2.2.0.0")]
+[assembly: AssemblyVersion("2.3.0.0")]
 
 static class Program
 {
-    public const string Version = "2.2.0";
+    public const string Version = "2.3.0";
     // --demo: made-up places, nothing read from or saved to this PC. "--theme Name" picks its theme (for screenshots).
     public static bool Demo;
     public static string DemoTheme; public static int DemoStyle; public static bool DemoFull, DemoNext; // --next: a made-up next calendar event
